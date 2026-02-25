@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <title>远程控制</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div id="app">
+        <!-- 连接状态 -->
+        <div id="status-bar">
+            <span id="connection-status" class="connecting">连接中...</span>
+            <span id="fps-counter">0 FPS</span>
+        </div>
+
+        <!-- 主显示区域 - 全屏无遮挡 -->
+        <div id="screen-container">
+            <img id="screen" src="/video" alt="远程屏幕">
+            <div id="touch-overlay"></div>
+
+            <!-- 虚拟鼠标指针 -->
+            <div id="virtual-cursor" class="hidden">
+                <div class="cursor-crosshair"></div>
+                <div class="cursor-dot"></div>
+            </div>
+
+            <!-- 悬浮设置按钮 -->
+            <button id="settings-btn" class="floating-btn" title="设置">⚙️</button>
+
+            <!-- 模式指示器 -->
+            <div id="mode-indicator">触控模式</div>
+        </div>
+
+        <!-- 虚拟游戏手柄 (游戏模式) -->
+        <div id="gamepad-controls" class="hidden">
+            <!-- 左摇杆 - 移动 -->
+            <div id="left-stick" class="virtual-stick">
+                <div class="stick-base">
+                    <div class="stick-handle"></div>
+                </div>
+                <span class="stick-label">移动 (WASD)</span>
+            </div>
+
+            <!-- 右摇杆 - 视角/鼠标 -->
+            <div id="right-stick" class="virtual-stick">
+                <div class="stick-base">
+                    <div class="stick-handle"></div>
+                </div>
+                <span class="stick-label">视角/鼠标</span>
+            </div>
+
+            <!-- 动作按钮 -->
+            <div id="action-buttons">
+                <button class="action-btn" data-btn="Y">Y<br><small>技能</small></button>
+                <button class="action-btn" data-btn="X">X<br><small>交互</small></button>
+                <button class="action-btn" data-btn="B">B<br><small>返回</small></button>
+                <button class="action-btn primary" data-btn="A">A<br><small>跳跃</small></button>
+            </div>
+
+            <!-- 额外功能键 -->
+            <div id="extra-buttons">
+                <button class="extra-btn" data-key="Tab">背包<br>Tab</button>
+                <button class="extra-btn" data-key="Escape">菜单<br>Esc</button>
+                <button class="extra-btn" data-key="Shift">冲刺<br>Shift</button>
+                <button class="extra-btn" data-key="Control">蹲下<br>Ctrl</button>
+            </div>
+        </div>
+
+        <!-- 虚拟键盘 (键盘模式) -->
+        <div id="keyboard-controls" class="hidden">
+            <div id="virtual-keyboard">
+                <!-- 功能键行 -->
+                <div class="kb-row">
+                    <button class="kb-key kb-func" data-key="Escape">Esc</button>
+                    <button class="kb-key" data-key="1">1</button>
+                    <button class="kb-key" data-key="2">2</button>
+                    <button class="kb-key" data-key="3">3</button>
+                    <button class="kb-key" data-key="4">4</button>
+                    <button class="kb-key" data-key="5">5</button>
+                    <button class="kb-key" data-key="6">6</button>
+                    <button class="kb-key" data-key="7">7</button>
+                    <button class="kb-key" data-key="8">8</button>
+                    <button class="kb-key" data-key="9">9</button>
+                    <button class="kb-key" data-key="0">0</button>
+                    <button class="kb-key" data-key="-">-</button>
+                    <button class="kb-key" data-key="=">=</button>
+                    <button class="kb-key kb-func" data-key="Backspace">⌫</button>
+                </div>
+                <!-- QWERTY行 -->
+                <div class="kb-row">
+                    <button class="kb-key kb-func" data-key="Tab">Tab</button>
+                    <button class="kb-key" data-key="q">Q</button>
+                    <button class="kb-key" data-key="w">W</button>
+                    <button class="kb-key" data-key="e">E</button>
+                    <button class="kb-key" data-key="r">R</button>
+                    <button class="kb-key" data-key="t">T</button>
+                    <button class="kb-key" data-key="y">Y</button>
+                    <button class="kb-key" data-key="u">U</button>
+                    <button class="kb-key" data-key="i">I</button>
+                    <button class="kb-key" data-key="o">O</button>
+                    <button class="kb-key" data-key="p">P</button>
+                    <button class="kb-key" data-key="[">[</button>
+                    <button class="kb-key" data-key="]">]</button>
+                    <button class="kb-key" data-key="\\">\\</button>
+                </div>
+                <!-- ASDF行 -->
+                <div class="kb-row">
+                    <button class="kb-key kb-func" data-key="CapsLock">Caps</button>
+                    <button class="kb-key" data-key="a">A</button>
+                    <button class="kb-key" data-key="s">S</button>
+                    <button class="kb-key" data-key="d">D</button>
+                    <button class="kb-key" data-key="f">F</button>
+                    <button class="kb-key" data-key="g">G</button>
+                    <button class="kb-key" data-key="h">H</button>
+                    <button class="kb-key" data-key="j">J</button>
+                    <button class="kb-key" data-key="k">K</button>
+                    <button class="kb-key" data-key="l">L</button>
+                    <button class="kb-key" data-key=";">;</button>
+                    <button class="kb-key" data-key="'">'</button>
+                    <button class="kb-key kb-func kb-enter" data-key="Enter">↵</button>
+                </div>
+                <!-- ZXCV行 -->
+                <div class="kb-row">
+                    <button class="kb-key kb-func kb-shift" data-key="Shift">Shift</button>
+                    <button class="kb-key" data-key="z">Z</button>
+                    <button class="kb-key" data-key="x">X</button>
+                    <button class="kb-key" data-key="c">C</button>
+                    <button class="kb-key" data-key="v">V</button>
+                    <button class="kb-key" data-key="b">B</button>
+                    <button class="kb-key" data-key="n">N</button>
+                    <button class="kb-key" data-key="m">M</button>
+                    <button class="kb-key" data-key=",">,</button>
+                    <button class="kb-key" data-key=".">.</button>
+                    <button class="kb-key" data-key="/">/</button>
+                    <button class="kb-key kb-func kb-shift" data-key="Shift">Shift</button>
+                </div>
+                <!-- 底部控制行 -->
+                <div class="kb-row kb-bottom-row">
+                    <button class="kb-key kb-ctrl" data-key="Control">Ctrl</button>
+                    <button class="kb-key kb-space" data-key="Space">空格</button>
+                    <button class="kb-key kb-ctrl" data-key="Alt">Alt</button>
+                    <div class="kb-arrow-group kb-arrow-horizontal">
+                        <button class="kb-key kb-arrow" data-key="ArrowLeft">←</button>
+                        <button class="kb-key kb-arrow" data-key="ArrowDown">↓</button>
+                        <button class="kb-key kb-arrow" data-key="ArrowRight">→</button>
+                        <button class="kb-key kb-arrow" data-key="ArrowUp">↑</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 设置面板 -->
+        <div id="settings-panel" class="hidden">
+            <div class="settings-content">
+                <h3>⚙️ 设置</h3>
+
+                <!-- 模式切换 - 移入设置 -->
+                <div class="setting-section">
+                    <label>控制模式</label>
+                    <div id="mode-tabs">
+                        <button class="mode-btn active" data-mode="touch">触控模式</button>
+                        <button class="mode-btn" data-mode="gamepad">游戏模式</button>
+                        <button class="mode-btn" data-mode="keyboard">键盘模式</button>
+                    </div>
+                    <div id="mode-description" class="mode-desc">
+                        单指=鼠标移动，点击=左键，双指=右键/滚轮
+                    </div>
+                </div>
+
+                <div class="setting-item">
+                    <label>画质</label>
+                    <input type="range" id="quality-slider" min="20" max="80" value="50">
+                    <span id="quality-value">50</span>
+                </div>
+
+                <div class="setting-item">
+                    <label>帧率</label>
+                    <input type="range" id="fps-slider" min="15" max="45" value="25">
+                    <span id="fps-value">25</span>
+                </div>
+
+                <div class="setting-item">
+                    <label>鼠标灵敏度</label>
+                    <input type="range" id="sensitivity-slider" min="0.5" max="3" step="0.1" value="1.5">
+                    <span id="sensitivity-value">1.5x</span>
+                </div>
+
+                <div class="setting-item">
+                    <label>输入延迟优化</label>
+                    <input type="checkbox" id="low-latency-mode" checked>
+                    <span>启用</span>
+                </div>
+
+                <div class="setting-item">
+                    <label>全屏显示</label>
+                    <button id="fullscreen-btn">切换全屏</button>
+                </div>
+
+                <button id="close-settings" class="close-btn">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/socket.io.min.js"></script>
+    <script src="/static/app.js"></script>
+</body>
+</html>
