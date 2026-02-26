@@ -156,6 +156,18 @@ body {
     animation: cursorClick 0.15s ease;
 }
 
+/* 游戏模式下的光标 - 半透明减少干扰 */
+#virtual-cursor.game-mode-cursor .cursor-crosshair::before,
+#virtual-cursor.game-mode-cursor .cursor-crosshair::after {
+    background: rgba(255, 0, 0, 0.5);
+    box-shadow: 0 0 2px rgba(255, 0, 0, 0.4);
+}
+
+#virtual-cursor.game-mode-cursor .cursor-dot {
+    background: rgba(255, 0, 0, 0.5);
+    box-shadow: 0 0 3px rgba(255, 0, 0, 0.4);
+}
+
 @keyframes cursorClick {
     0% { transform: translate(-50%, -50%) scale(1); }
     50% { transform: translate(-50%, -50%) scale(0.85); }
@@ -324,6 +336,32 @@ body {
     border-radius: 8px;
     font-size: 16px;
     cursor: pointer;
+}
+
+/* 游戏模式设置区域 */
+#game-mode-settings {
+    margin-top: 15px;
+    padding-top: 15px;
+    border-top: 2px solid #3498db;
+}
+
+#game-mode-settings .setting-section label {
+    display: block;
+    font-weight: bold;
+    color: #3498db;
+    margin-bottom: 10px;
+    font-size: 14px;
+}
+
+#game-mode-settings .setting-item {
+    background: rgba(52, 152, 219, 0.1);
+    border-radius: 6px;
+    padding: 8px 12px;
+    margin-bottom: 8px;
+}
+
+#game-mode-settings.hidden {
+    display: none;
 }
 
 /* 虚拟游戏手柄 */

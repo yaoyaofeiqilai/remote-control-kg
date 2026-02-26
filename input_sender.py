@@ -88,11 +88,29 @@ class INPUT(ctypes.Structure):
     ]
 
 
+class POINT(ctypes.Structure):
+    _fields_ = [("x", wintypes.LONG), ("y", wintypes.LONG)]
+
+
 # 加载 SendInput 函数
 user32 = ctypes.windll.user32
 SendInput = user32.SendInput
 SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), wintypes.INT]
 SendInput.restype = wintypes.UINT
+
+GetCursorPos = user32.GetCursorPos
+# 直接使用 ctypes.byref 传递，不需要严格的 POINTER(POINT) 类型检查
+# 这样可以避免 "expected LP_POINT instance instead of pointer to POINT" 错误
+# GetCursorPos.argtypes = [ctypes.POINTER(POINT)]
+GetCursorPos.restype = wintypes.BOOL
+
+SetCursorPos = user32.SetCursorPos
+SetCursorPos.argtypes = [wintypes.INT, wintypes.INT]
+SetCursorPos.restype = wintypes.BOOL
+
+MapVirtualKey = user32.MapVirtualKeyW
+MapVirtualKey.argtypes = [wintypes.UINT, wintypes.UINT]
+MapVirtualKey.restype = wintypes.UINT
 
 
 def send_mouse_input(dx, dy, flags, data=0):
@@ -132,6 +150,21 @@ class InputSender:
     """底层输入发送器"""
 
     def __init__(self):
+        # 0 = SM_CXSCREEN, 1 = SM_CYSCREEN
+        self.screen_width = ctypes.windll.user32.GetSystemMetrics(0)
+        self.screen_height = ctypes.windll.user32.GetSystemMetrics(1)
+        
+        # 处理 DPI 缩放
+        # 设置 DPI 感知，确保 GetCursorPos 和 SetCursorPos 使用物理坐标
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(1) # PROCESS_SYSTEM_DPI_AWARE
+        except Exception:
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
+                
+        # 重新获取物理分辨率
         self.screen_width = ctypes.windll.user32.GetSystemMetrics(0)
         self.screen_height = ctypes.windll.user32.GetSystemMetrics(1)
 
@@ -141,9 +174,71 @@ class InputSender:
         self.screen_height = ctypes.windll.user32.GetSystemMetrics(1)
         return (self.screen_width, self.screen_height)
 
-    def move_relative(self, dx, dy):
-        """相对移动鼠标（游戏推荐）"""
-        return send_mouse_input(dx, dy, MOUSEEVENTF_MOVE)
+    def get_mouse_pos(self):
+        """获取当前鼠标位置 (底层 API)"""
+        pt = POINT()
+        # 使用 ctypes.byref 传递 POINT 实例的引用，这与 GetCursorPos.argtypes = [ctypes.POINTER(POINT)] 匹配
+        if GetCursorPos(ctypes.byref(pt)):
+            return pt.x, pt.y
+        return 0, 0
+
+    def set_mouse_pos(self, x, y):
+        """设置鼠标位置 (底层 API)"""
+        # SetCursorPos 使用物理坐标，但可能受 DPI 缩放影响
+        # 如果我们已经开启了 DPI 感知，这里的坐标应该是准确的物理像素
+        return SetCursorPos(int(x), int(y))
+
+    def move_relative(self, dx, dy, raw_input=False):
+        """相对移动鼠标
+
+        Args:
+            dx, dy: 移动的像素数（可以是浮点数）
+            raw_input: 如果为 True，使用原始输入模式（适合FPS游戏视角控制）
+                      如果为 False，移动鼠标指针位置（适合普通桌面操作）
+        """
+        # 累积值取整，保留小数部分用于下次
+        dx_int = int(round(dx))
+        dy_int = int(round(dy))
+
+        if dx_int == 0 and dy_int == 0:
+            return True  # 移动为0，直接返回成功
+
+        if raw_input:
+            # 原始输入模式：发送原始鼠标移动事件
+            # FPS游戏捕获鼠标后会读取这些移动数据来控制视角
+            print(f"  [SendInput] dx={dx_int}, dy={dy_int}")
+            return send_mouse_input(dx_int, dy_int, MOUSEEVENTF_MOVE)
+        else:
+            # 普通模式：移动鼠标指针位置
+            current_x, current_y = self.get_mouse_pos()
+            new_x = current_x + dx_int
+            new_y = current_y + dy_int
+
+            # 限制在屏幕范围内
+            new_x = max(0, min(new_x, self.screen_width))
+            new_y = max(0, min(new_y, self.screen_height))
+
+            # 优先使用 SetCursorPos，因为它更可靠
+            if self.set_mouse_pos(new_x, new_y):
+                return True
+
+            # 如果 SetCursorPos 失败，回退到 SendInput
+            return send_mouse_input(dx_int, dy_int, MOUSEEVENTF_MOVE)
+
+    def move_camera(self, dx, dy):
+        """专门用于FPS游戏的视角控制
+
+        使用 SendInput 发送鼠标移动，但立即将鼠标重置到屏幕中心
+        这样FPS游戏可以读取到移动增量，但鼠标不会真的移动到边缘
+        """
+        # 发送相对移动
+        result = send_mouse_input(int(dx), int(dy), MOUSEEVENTF_MOVE)
+
+        # 将鼠标重置到屏幕中心（游戏通常会自己隐藏鼠标，这只是辅助）
+        # 注意：不在此处重置，因为这会和游戏的鼠标捕获冲突
+        # 重置鼠标的逻辑应该在游戏循环中处理
+
+        return result
 
     def move_absolute(self, x, y):
         """绝对位置移动鼠标（坐标映射到 0-65535）"""

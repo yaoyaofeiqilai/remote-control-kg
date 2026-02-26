@@ -10,6 +10,11 @@ const CONFIG = {
     maxStickDistance: 40,
     lowLatencyMode: true,  // 低延迟模式
     touchThrottleMs: 8,    // 触摸节流(约120Hz)
+    // 游戏模式专用配置
+    gameMode: {
+        cameraSensitivity: 30,   // 视角灵敏度 (降低后的默认值)
+        showCursorDot: true,      // 是否显示鼠标红点
+    }
 };
 
 // ============ 状态管理 ============
@@ -131,6 +136,12 @@ function stopMouseSync() {
 function updateVirtualCursorDisplay() {
     const virtualCursor = document.getElementById('virtual-cursor');
     if (!virtualCursor || !state.virtualMouse) return;
+
+    // 游戏模式下根据设置决定是否显示红点
+    if (state.currentMode === 'gamepad' && !CONFIG.gameMode.showCursorDot) {
+        virtualCursor.classList.add('hidden');
+        return;
+    }
 
     const screenEl = document.getElementById('screen');
     const rect = screenEl.getBoundingClientRect();
@@ -526,11 +537,17 @@ function initGamepadMode() {
     });
 
     initVirtualStick('right-stick', (x, y) => {
-        const sensitivity = 15 * CONFIG.mouseSensitivity;
-        emit('mouse_move', {
-            x: Math.round(state.lastMouseX + x * sensitivity),
-            y: Math.round(state.lastMouseY + y * sensitivity),
-        });
+        // 游戏模式：发送相对鼠标移动，用于控制FPS游戏视角
+        // 使用配置的视角灵敏度
+        const sensitivity = CONFIG.gameMode.cameraSensitivity;
+        const dx = x * sensitivity;
+        const dy = y * sensitivity;
+
+        // 只在有实际移动时发送
+        if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+            console.log('[右摇杆] Camera move:', dx.toFixed(2), dy.toFixed(2), 'sensitivity:', sensitivity);
+            emit('mouse_move_relative', { dx: dx, dy: dy });
+        }
     }, true);
 
     document.querySelectorAll('.action-btn').forEach(btn => {
@@ -731,6 +748,22 @@ function initModeSwitching() {
                 modeDescription.textContent = modeDescs[mode];
             }
 
+            // 通知服务端模式切换
+            emit('set_mode', { mode: mode });
+
+            // 切换游戏模式设置显示
+            const gameModeSettings = document.getElementById('game-mode-settings');
+            if (gameModeSettings) {
+                if (mode === 'gamepad') {
+                    gameModeSettings.classList.remove('hidden');
+                } else {
+                    gameModeSettings.classList.add('hidden');
+                }
+            }
+
+            // 更新鼠标红点显示状态
+            updateCursorDotVisibility();
+
             // 切换显示
             switch (mode) {
                 case 'touch':
@@ -794,6 +827,9 @@ function initSettings() {
         });
     }
 
+    // 游戏模式专用设置
+    initGameModeSettings();
+
     // 全屏按钮
     fullscreenBtn.addEventListener('click', () => {
         if (!document.fullscreenElement) {
@@ -841,6 +877,60 @@ function updateFPS() {
     }
 
     requestAnimationFrame(updateFPS);
+}
+
+// ============ 游戏模式设置 ============
+function initGameModeSettings() {
+    // 视角灵敏度滑块
+    const cameraSensitivitySlider = document.getElementById('camera-sensitivity-slider');
+    const cameraSensitivityValue = document.getElementById('camera-sensitivity-value');
+    if (cameraSensitivitySlider && cameraSensitivityValue) {
+        cameraSensitivitySlider.addEventListener('input', () => {
+            const value = parseInt(cameraSensitivitySlider.value);
+            cameraSensitivityValue.textContent = value;
+            CONFIG.gameMode.cameraSensitivity = value;
+            console.log('[Config] 视角灵敏度:', value);
+        });
+    }
+
+    // 显示鼠标红点开关
+    const showCursorDotCheckbox = document.getElementById('show-cursor-dot');
+    const cursorDotStatus = document.getElementById('cursor-dot-status');
+    if (showCursorDotCheckbox && cursorDotStatus) {
+        showCursorDotCheckbox.addEventListener('change', () => {
+            CONFIG.gameMode.showCursorDot = showCursorDotCheckbox.checked;
+            cursorDotStatus.textContent = showCursorDotCheckbox.checked ? '显示' : '隐藏';
+            updateCursorDotVisibility();
+            console.log('[Config] 显示鼠标红点:', CONFIG.gameMode.showCursorDot);
+        });
+    }
+}
+
+// 更新鼠标红点显示状态
+function updateCursorDotVisibility() {
+    const virtualCursor = document.getElementById('virtual-cursor');
+    if (!virtualCursor) return;
+
+    // 游戏模式下根据设置决定是否显示红点
+    if (state.currentMode === 'gamepad') {
+        virtualCursor.classList.remove('game-mode-cursor');
+        if (CONFIG.gameMode.showCursorDot) {
+            // 显示红点但使用半透明样式，减少视觉干扰
+            virtualCursor.classList.add('game-mode-cursor');
+            virtualCursor.classList.remove('hidden');
+        } else {
+            // 完全隐藏红点
+            virtualCursor.classList.add('hidden');
+        }
+    } else {
+        // 非游戏模式，移除游戏模式样式
+        virtualCursor.classList.remove('game-mode-cursor');
+        // 触控模式下由 updateVirtualCursorDisplay 控制显示
+        // 键盘模式下保持隐藏
+        if (state.currentMode === 'keyboard') {
+            virtualCursor.classList.add('hidden');
+        }
+    }
 }
 
 // ============ 初始化 ============

@@ -290,6 +290,25 @@ def handle_disconnect():
     print(f"[-] 客户端断开，当前连接数: {connected_clients}")
 
 
+@socketio.on('set_mode')
+def handle_set_mode(data):
+    """客户端切换模式"""
+    global game_mode
+    mode = data.get('mode', 'touch')
+
+    if mode == 'gamepad':
+        game_mode = True
+        print(f"[模式切换] ==============================")
+        print(f"[模式切换] 进入游戏模式 (game_mode=True)")
+        print(f"[模式切换] input_sender 可用: {input_sender is not None}")
+        print(f"[模式切换] ==============================")
+    else:
+        game_mode = False
+        print(f"[模式切换] 进入{mode}模式 (game_mode=False)")
+
+    emit('mode_changed', {'mode': mode, 'game_mode': game_mode})
+
+
 @socketio.on('mouse_move')
 def handle_mouse_move(data):
     """处理鼠标移动（绝对位置）"""
@@ -303,6 +322,11 @@ def handle_mouse_move(data):
 
         if game_mode and input_sender:
             input_sender.move_absolute(x, y)
+        elif input_sender:
+            # 使用底层 SetCursorPos 替代 pyautogui.moveTo
+            if not input_sender.set_mouse_pos(x, y):
+                # 如果底层设置失败（可能因权限不足），尝试回退到 pyautogui
+                pyautogui.moveTo(x, y, duration=0)
         else:
             pyautogui.moveTo(x, y, duration=0)
     except Exception as e:
@@ -312,23 +336,36 @@ def handle_mouse_move(data):
 @socketio.on('mouse_move_relative')
 def handle_mouse_move_relative(data):
     """处理鼠标相对移动（触摸板模式）"""
+    global game_mode
     try:
         dx = data.get('dx', 0)
         dy = data.get('dy', 0)
-        # 使用 pyautogui 的相对移动
+        print(f"[DEBUG] mouse_move_relative: dx={dx:.2f}, dy={dy:.2f}, game_mode={game_mode}, input_sender={input_sender is not None}")
+
         if game_mode and input_sender:
-            input_sender.move_relative(int(dx), int(dy))
+            # 游戏模式：使用原始输入，直接发送鼠标移动事件
+            # 这样FPS游戏可以正确捕获并用于视角控制
+            print(f"[游戏模式] 视角移动: dx={dx:.2f}, dy={dy:.2f}")
+            result = input_sender.move_relative(dx, dy, raw_input=True)
+            print(f"[游戏模式] SendInput 结果: {result}")
         else:
+            # 非游戏模式：使用 pyautogui
+            print(f"[普通模式] 使用 pyautogui 移动: dx={dx:.2f}, dy={dy:.2f}")
             pyautogui.moveRel(dx, dy, duration=0)
     except Exception as e:
         print(f"鼠标相对移动错误: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 @socketio.on('get_mouse_pos')
 def handle_get_mouse_pos(sid=None):
     """获取当前鼠标位置"""
     try:
-        x, y = pyautogui.position()
+        if input_sender:
+            x, y = input_sender.get_mouse_pos()
+        else:
+            x, y = pyautogui.position()
         emit('mouse_pos', {'x': x, 'y': y})
     except Exception as e:
         print(f"获取鼠标位置错误: {e}")

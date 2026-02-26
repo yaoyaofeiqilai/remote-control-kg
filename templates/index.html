@@ -194,6 +194,25 @@
                     <span>启用</span>
                 </div>
 
+                <!-- 游戏模式专用设置 -->
+                <div id="game-mode-settings" class="hidden">
+                    <div class="setting-section">
+                        <label>🎮 游戏模式选项</label>
+
+                        <div class="setting-item">
+                            <label>视角灵敏度</label>
+                            <input type="range" id="camera-sensitivity-slider" min="10" max="100" step="5" value="30">
+                            <span id="camera-sensitivity-value">30</span>
+                        </div>
+
+                        <div class="setting-item">
+                            <label>显示鼠标红点</label>
+                            <input type="checkbox" id="show-cursor-dot" checked>
+                            <span id="cursor-dot-status">显示</span>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="setting-item">
                     <label>全屏显示</label>
                     <button id="fullscreen-btn">切换全屏</button>
