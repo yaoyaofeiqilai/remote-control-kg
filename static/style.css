@@ -381,14 +381,15 @@ body {
 
 .virtual-stick {
     position: absolute;
-    bottom: 20px;
-    width: 120px;
-    height: 120px;
+    bottom: 40px;
+    width: 240px;
+    height: 240px;
     z-index: 55;
 }
 
 #left-stick {
-    left: 20px;
+    left: 70px;
+    bottom: 90px;
 }
 
 #right-stick {
@@ -406,8 +407,8 @@ body {
 
 .stick-handle {
     position: absolute;
-    width: 50px;
-    height: 50px;
+    width: 96px;
+    height: 96px;
     background: rgba(52, 152, 219, 0.8);
     border-radius: 50%;
     top: 50%;
@@ -418,7 +419,7 @@ body {
 
 .stick-label {
     position: absolute;
-    bottom: -25px;
+    bottom: -32px;
     left: 50%;
     transform: translateX(-50%);
     font-size: 12px;

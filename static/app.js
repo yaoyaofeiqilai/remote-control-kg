@@ -7,12 +7,13 @@
 const CONFIG = {
     mouseSensitivity: 1.5,
     deadzone: 0.2,
-    maxStickDistance: 40,
+    maxStickDistance: 90,
     lowLatencyMode: true,  // 低延迟模式
     touchThrottleMs: 8,    // 触摸节流(约120Hz)
     // 游戏模式专用配置
     gameMode: {
         cameraSensitivity: 30,   // 视角灵敏度 (降低后的默认值)
+        pinchSensitivity: 0.25,  // 双指缩放灵敏度（deltaDist -> 滚轮 dy）
         showCursorDot: true,      // 是否显示鼠标红点
     }
 };
@@ -36,10 +37,15 @@ const state = {
         right: { x: 0, y: 0, active: false, touchId: null },
     },
     gamepadAltLocked: false,
+    gamepadTabWheelActive: false,
     fps: 0,
     frameCount: 0,
     lastFpsUpdate: Date.now(),
 };
+
+function isGamepadPointerActive() {
+    return state.gamepadAltLocked || state.gamepadTabWheelActive;
+}
 
 // ============ Socket.IO 连接 ============
 function initSocket() {
@@ -139,7 +145,7 @@ function updateVirtualCursorDisplay() {
     if (!virtualCursor || !state.virtualMouse) return;
 
     // 游戏模式下根据设置决定是否显示红点
-    if (state.currentMode === 'gamepad' && !state.gamepadAltLocked && !CONFIG.gameMode.showCursorDot) {
+    if (state.currentMode === 'gamepad' && !isGamepadPointerActive() && !CONFIG.gameMode.showCursorDot) {
         virtualCursor.classList.add('hidden');
         return;
     }
@@ -242,21 +248,38 @@ function initTouchMode() {
 
     // 游戏模式下：全屏滑动 = 视角；Alt 锁定时滑动 = 光标
     let gamepadSwipeState = {
+        mode: null,
         touchId: null,
+        startX: 0,
+        startY: 0,
         lastX: 0,
         lastY: 0,
+        moved: false,
+        startTime: 0,
         lastSendTime: 0,
+        pinchId1: null,
+        pinchId2: null,
+        lastPinchDistance: 0,
     };
 
     function gamepadSwipeStart(e) {
-        if (e.touches.length !== 1) return;
-        if (gamepadSwipeState.touchId !== null) return;
+        if (gamepadSwipeState.mode === 'swipe' && e.touches.length === 2 && !isGamepadPointerActive()) {
+            const t1 = e.touches[0];
+            const t2 = e.touches[1];
+            gamepadSwipeState.mode = 'pinch';
+            gamepadSwipeState.pinchId1 = t1.identifier;
+            gamepadSwipeState.pinchId2 = t2.identifier;
+            gamepadSwipeState.touchId = null;
+            gamepadSwipeState.moved = true;
+            const dx = t1.clientX - t2.clientX;
+            const dy = t1.clientY - t2.clientY;
+            gamepadSwipeState.lastPinchDistance = Math.sqrt(dx * dx + dy * dy);
+            return;
+        }
 
-        const touch = e.touches[0];
-        gamepadSwipeState.touchId = touch.identifier;
-        gamepadSwipeState.lastX = touch.clientX;
-        gamepadSwipeState.lastY = touch.clientY;
-        gamepadSwipeState.lastSendTime = 0;
+        if (gamepadSwipeState.mode !== null) return;
+
+        gamepadSwipeState.startTime = Date.now();
         state.isTouching = true;
 
         if (!state.virtualMouse) {
@@ -266,57 +289,168 @@ function initTouchMode() {
             };
         }
 
-        if (state.gamepadAltLocked) {
-            updateVirtualCursorDisplay();
+        if (e.touches.length === 1) {
+            const touch = e.touches[0];
+            gamepadSwipeState.mode = 'swipe';
+            gamepadSwipeState.touchId = touch.identifier;
+            gamepadSwipeState.startX = touch.clientX;
+            gamepadSwipeState.startY = touch.clientY;
+            gamepadSwipeState.lastX = touch.clientX;
+            gamepadSwipeState.lastY = touch.clientY;
+            gamepadSwipeState.moved = false;
+            gamepadSwipeState.lastSendTime = 0;
+
+            if (isGamepadPointerActive()) {
+                updateVirtualCursorDisplay();
+            }
+        } else if (e.touches.length === 2) {
+            const t1 = e.touches[0];
+            const t2 = e.touches[1];
+            gamepadSwipeState.mode = 'pinch';
+            gamepadSwipeState.pinchId1 = t1.identifier;
+            gamepadSwipeState.pinchId2 = t2.identifier;
+            const dx = t1.clientX - t2.clientX;
+            const dy = t1.clientY - t2.clientY;
+            gamepadSwipeState.lastPinchDistance = Math.sqrt(dx * dx + dy * dy);
         }
     }
 
     function gamepadSwipeMove(e) {
-        if (gamepadSwipeState.touchId === null) return;
-        const touch = Array.from(e.touches).find(t => t.identifier === gamepadSwipeState.touchId);
-        if (!touch) return;
+        if (gamepadSwipeState.mode === null) return;
 
         const now = Date.now();
         const dt = now - gamepadSwipeState.lastSendTime;
         if (dt < CONFIG.touchThrottleMs) {
-            gamepadSwipeState.lastX = touch.clientX;
-            gamepadSwipeState.lastY = touch.clientY;
+            if (gamepadSwipeState.mode === 'swipe' && gamepadSwipeState.touchId !== null) {
+                const touch = Array.from(e.touches).find(t => t.identifier === gamepadSwipeState.touchId);
+                if (touch) {
+                    gamepadSwipeState.lastX = touch.clientX;
+                    gamepadSwipeState.lastY = touch.clientY;
+                }
+            } else if (gamepadSwipeState.mode === 'pinch' && gamepadSwipeState.pinchId1 !== null && gamepadSwipeState.pinchId2 !== null) {
+                const t1 = Array.from(e.touches).find(t => t.identifier === gamepadSwipeState.pinchId1);
+                const t2 = Array.from(e.touches).find(t => t.identifier === gamepadSwipeState.pinchId2);
+                if (t1 && t2) {
+                    const dx = t1.clientX - t2.clientX;
+                    const dy = t1.clientY - t2.clientY;
+                    gamepadSwipeState.lastPinchDistance = Math.sqrt(dx * dx + dy * dy);
+                }
+            }
             return;
         }
         gamepadSwipeState.lastSendTime = now;
 
-        const deltaX = touch.clientX - gamepadSwipeState.lastX;
-        const deltaY = touch.clientY - gamepadSwipeState.lastY;
-        gamepadSwipeState.lastX = touch.clientX;
-        gamepadSwipeState.lastY = touch.clientY;
+        if (gamepadSwipeState.mode === 'pinch') {
+            const t1 = Array.from(e.touches).find(t => t.identifier === gamepadSwipeState.pinchId1);
+            const t2 = Array.from(e.touches).find(t => t.identifier === gamepadSwipeState.pinchId2);
+            if (!t1 || !t2) return;
 
-        if (state.gamepadAltLocked) {
-            const sens = CONFIG.mouseSensitivity || 1.5;
-            const dx = deltaX * sens;
-            const dy = deltaY * sens;
-            if (Math.abs(dx) > 0.2 || Math.abs(dy) > 0.2) {
-                state.virtualMouse.x += dx;
-                state.virtualMouse.y += dy;
-                state.virtualMouse.x = Math.max(0, Math.min(state.virtualMouse.x, state.screenWidth));
-                state.virtualMouse.y = Math.max(0, Math.min(state.virtualMouse.y, state.screenHeight));
-                updateVirtualCursorDisplay();
-                emit('mouse_move_relative', { dx: dx, dy: dy, raw: false });
+            const dx = t1.clientX - t2.clientX;
+            const dy = t1.clientY - t2.clientY;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const deltaDist = dist - gamepadSwipeState.lastPinchDistance;
+            gamepadSwipeState.lastPinchDistance = dist;
+
+            if (!isGamepadPointerActive()) {
+                const zoom = Math.max(-80, Math.min(80, Math.round(deltaDist * CONFIG.gameMode.pinchSensitivity)));
+                if (zoom !== 0) {
+                    emit('mouse_scroll', { dx: 0, dy: zoom });
+                }
             }
-        } else {
-            const scale = CONFIG.gameMode.cameraSensitivity / 30;
-            const dx = deltaX * scale;
-            const dy = deltaY * scale;
-            if (Math.abs(dx) > 0.2 || Math.abs(dy) > 0.2) {
-                emit('mouse_move_relative', { dx: dx, dy: dy, raw: true });
+            return;
+        }
+
+        if (gamepadSwipeState.mode === 'swipe') {
+            if (e.touches.length === 2 && !isGamepadPointerActive()) {
+                const t1 = e.touches[0];
+                const t2 = e.touches[1];
+                gamepadSwipeState.mode = 'pinch';
+                gamepadSwipeState.pinchId1 = t1.identifier;
+                gamepadSwipeState.pinchId2 = t2.identifier;
+                gamepadSwipeState.touchId = null;
+                const dx = t1.clientX - t2.clientX;
+                const dy = t1.clientY - t2.clientY;
+                gamepadSwipeState.lastPinchDistance = Math.sqrt(dx * dx + dy * dy);
+                return;
+            }
+            const touch = Array.from(e.touches).find(t => t.identifier === gamepadSwipeState.touchId);
+            if (!touch) return;
+
+            const deltaX = touch.clientX - gamepadSwipeState.lastX;
+            const deltaY = touch.clientY - gamepadSwipeState.lastY;
+            gamepadSwipeState.lastX = touch.clientX;
+            gamepadSwipeState.lastY = touch.clientY;
+
+            const totalMoveX = Math.abs(touch.clientX - gamepadSwipeState.startX);
+            const totalMoveY = Math.abs(touch.clientY - gamepadSwipeState.startY);
+            if (!gamepadSwipeState.moved && (totalMoveX > 6 || totalMoveY > 6)) {
+                gamepadSwipeState.moved = true;
+            }
+
+            if (isGamepadPointerActive()) {
+                const sens = CONFIG.mouseSensitivity || 1.5;
+                const dx = deltaX * sens;
+                const dy = deltaY * sens;
+                if (Math.abs(dx) > 0.2 || Math.abs(dy) > 0.2) {
+                    state.virtualMouse.x += dx;
+                    state.virtualMouse.y += dy;
+                    state.virtualMouse.x = Math.max(0, Math.min(state.virtualMouse.x, state.screenWidth));
+                    state.virtualMouse.y = Math.max(0, Math.min(state.virtualMouse.y, state.screenHeight));
+                    updateVirtualCursorDisplay();
+                    emit('mouse_move_relative', { dx: dx, dy: dy, raw: false });
+                }
+            } else {
+                const scale = CONFIG.gameMode.cameraSensitivity / 30;
+                const dx = deltaX * scale;
+                const dy = deltaY * scale;
+                if (Math.abs(dx) > 0.2 || Math.abs(dy) > 0.2) {
+                    emit('mouse_move_relative', { dx: dx, dy: dy, raw: true });
+                }
             }
         }
     }
 
     function gamepadSwipeEnd(e) {
-        if (gamepadSwipeState.touchId === null) return;
-        const ended = Array.from(e.changedTouches).some(t => t.identifier === gamepadSwipeState.touchId);
-        if (!ended) return;
+        if (gamepadSwipeState.mode === null) return;
+
+        if (gamepadSwipeState.mode === 'swipe') {
+            const ended = Array.from(e.changedTouches).some(t => t.identifier === gamepadSwipeState.touchId);
+            if (!ended) return;
+
+            const duration = Date.now() - gamepadSwipeState.startTime;
+            if (isGamepadPointerActive() && !gamepadSwipeState.moved && duration < 350) {
+                doClick();
+            }
+        }
+
+        if (gamepadSwipeState.mode === 'pinch') {
+            const endedAny = Array.from(e.changedTouches).some(t => t.identifier === gamepadSwipeState.pinchId1 || t.identifier === gamepadSwipeState.pinchId2);
+            if (!endedAny) return;
+
+            if (e.touches.length === 1) {
+                const remaining = e.touches[0];
+                gamepadSwipeState.mode = 'swipe';
+                gamepadSwipeState.touchId = remaining.identifier;
+                gamepadSwipeState.startX = remaining.clientX;
+                gamepadSwipeState.startY = remaining.clientY;
+                gamepadSwipeState.lastX = remaining.clientX;
+                gamepadSwipeState.lastY = remaining.clientY;
+                gamepadSwipeState.moved = true;
+                gamepadSwipeState.startTime = Date.now();
+                gamepadSwipeState.lastSendTime = 0;
+                gamepadSwipeState.pinchId1 = null;
+                gamepadSwipeState.pinchId2 = null;
+                gamepadSwipeState.lastPinchDistance = 0;
+                state.isTouching = true;
+                return;
+            }
+        }
+
+        gamepadSwipeState.mode = null;
         gamepadSwipeState.touchId = null;
+        gamepadSwipeState.pinchId1 = null;
+        gamepadSwipeState.pinchId2 = null;
+        gamepadSwipeState.moved = false;
         state.isTouching = false;
     }
 
@@ -371,10 +505,20 @@ function initTouchMode() {
 
     // 执行单击
     function doClick() {
+        const closeTabAfterClick = state.currentMode === 'gamepad' && state.gamepadTabWheelActive;
         playClickAnimation();
         emit('mouse_click', { button: 'left', action: 'down' });
         setTimeout(() => {
             emit('mouse_click', { button: 'left', action: 'up' });
+            if (closeTabAfterClick) {
+                emit('key_event', { key: 'Tab', action: 'up' });
+                state.gamepadTabWheelActive = false;
+                const tabBtn = document.querySelector('.extra-btn[data-key="Tab"]');
+                if (tabBtn) {
+                    tabBtn.classList.remove('locked');
+                }
+                updateCursorDotVisibility();
+            }
         }, 50);
     }
 
@@ -665,6 +809,15 @@ function initGamepadMode() {
             btn.classList.remove('pressed');
             if (mouseButton) {
                 emit('mouse_click', { button: mouseButton, action: 'up' });
+                if (mouseButton === 'left' && state.gamepadTabWheelActive) {
+                    emit('key_event', { key: 'Tab', action: 'up' });
+                    state.gamepadTabWheelActive = false;
+                    const tabBtn = document.querySelector('.extra-btn[data-key="Tab"]');
+                    if (tabBtn) {
+                        tabBtn.classList.remove('locked');
+                    }
+                    updateCursorDotVisibility();
+                }
             } else if (keyName) {
                 emit('key_event', { key: keyName, action: 'up' });
             }
@@ -685,7 +838,25 @@ function initGamepadMode() {
                 state.gamepadAltLocked = !state.gamepadAltLocked;
                 btn.classList.toggle('locked', state.gamepadAltLocked);
                 emit('key_event', { key: 'Alt', action: state.gamepadAltLocked ? 'down' : 'up' });
-                if (state.gamepadAltLocked) {
+                if (isGamepadPointerActive()) {
+                    updateVirtualCursorDisplay();
+                } else {
+                    updateCursorDotVisibility();
+                }
+            }, { passive: false });
+            return;
+        }
+
+        if (keyName === 'Tab') {
+            btn.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                state.gamepadTabWheelActive = !state.gamepadTabWheelActive;
+                btn.classList.toggle('locked', state.gamepadTabWheelActive);
+                emit('key_event', { key: 'Tab', action: state.gamepadTabWheelActive ? 'down' : 'up' });
+                if (state.gamepadTabWheelActive) {
+                    if (!state.virtualMouse) {
+                        state.virtualMouse = { x: state.screenWidth / 2, y: state.screenHeight / 2 };
+                    }
                     updateVirtualCursorDisplay();
                 } else {
                     updateCursorDotVisibility();
@@ -718,6 +889,16 @@ function releaseGamepadToggles() {
         const altBtn = document.querySelector('.extra-btn.toggle[data-key="Alt"]');
         if (altBtn) {
             altBtn.classList.remove('locked');
+        }
+        updateCursorDotVisibility();
+    }
+
+    if (state.gamepadTabWheelActive) {
+        emit('key_event', { key: 'Tab', action: 'up' });
+        state.gamepadTabWheelActive = false;
+        const tabBtn = document.querySelector('.extra-btn[data-key="Tab"]');
+        if (tabBtn) {
+            tabBtn.classList.remove('locked');
         }
         updateCursorDotVisibility();
     }
@@ -1035,6 +1216,17 @@ function initGameModeSettings() {
             cameraSensitivityValue.textContent = value;
             CONFIG.gameMode.cameraSensitivity = value;
             console.log('[Config] 视角灵敏度:', value);
+        });
+    }
+
+    const pinchSensitivitySlider = document.getElementById('pinch-sensitivity-slider');
+    const pinchSensitivityValue = document.getElementById('pinch-sensitivity-value');
+    if (pinchSensitivitySlider && pinchSensitivityValue) {
+        pinchSensitivitySlider.addEventListener('input', () => {
+            const value = parseFloat(pinchSensitivitySlider.value);
+            pinchSensitivityValue.textContent = value.toFixed(2).replace(/\.00$/, '');
+            CONFIG.gameMode.pinchSensitivity = value;
+            console.log('[Config] 双指缩放灵敏度:', value);
         });
     }
 
