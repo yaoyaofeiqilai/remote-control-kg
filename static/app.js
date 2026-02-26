@@ -35,6 +35,7 @@ const state = {
         left: { x: 0, y: 0, active: false, touchId: null },
         right: { x: 0, y: 0, active: false, touchId: null },
     },
+    gamepadAltLocked: false,
     fps: 0,
     frameCount: 0,
     lastFpsUpdate: Date.now(),
@@ -138,7 +139,7 @@ function updateVirtualCursorDisplay() {
     if (!virtualCursor || !state.virtualMouse) return;
 
     // 游戏模式下根据设置决定是否显示红点
-    if (state.currentMode === 'gamepad' && !CONFIG.gameMode.showCursorDot) {
+    if (state.currentMode === 'gamepad' && !state.gamepadAltLocked && !CONFIG.gameMode.showCursorDot) {
         virtualCursor.classList.add('hidden');
         return;
     }
@@ -239,6 +240,86 @@ function initTouchMode() {
     // 偏差阈值 - 超过此值时进行校准
     const POS_SYNC_THRESHOLD = 100;
 
+    // 游戏模式下：全屏滑动 = 视角；Alt 锁定时滑动 = 光标
+    let gamepadSwipeState = {
+        touchId: null,
+        lastX: 0,
+        lastY: 0,
+        lastSendTime: 0,
+    };
+
+    function gamepadSwipeStart(e) {
+        if (e.touches.length !== 1) return;
+        if (gamepadSwipeState.touchId !== null) return;
+
+        const touch = e.touches[0];
+        gamepadSwipeState.touchId = touch.identifier;
+        gamepadSwipeState.lastX = touch.clientX;
+        gamepadSwipeState.lastY = touch.clientY;
+        gamepadSwipeState.lastSendTime = 0;
+        state.isTouching = true;
+
+        if (!state.virtualMouse) {
+            state.virtualMouse = {
+                x: state.screenWidth / 2,
+                y: state.screenHeight / 2,
+            };
+        }
+
+        if (state.gamepadAltLocked) {
+            updateVirtualCursorDisplay();
+        }
+    }
+
+    function gamepadSwipeMove(e) {
+        if (gamepadSwipeState.touchId === null) return;
+        const touch = Array.from(e.touches).find(t => t.identifier === gamepadSwipeState.touchId);
+        if (!touch) return;
+
+        const now = Date.now();
+        const dt = now - gamepadSwipeState.lastSendTime;
+        if (dt < CONFIG.touchThrottleMs) {
+            gamepadSwipeState.lastX = touch.clientX;
+            gamepadSwipeState.lastY = touch.clientY;
+            return;
+        }
+        gamepadSwipeState.lastSendTime = now;
+
+        const deltaX = touch.clientX - gamepadSwipeState.lastX;
+        const deltaY = touch.clientY - gamepadSwipeState.lastY;
+        gamepadSwipeState.lastX = touch.clientX;
+        gamepadSwipeState.lastY = touch.clientY;
+
+        if (state.gamepadAltLocked) {
+            const sens = CONFIG.mouseSensitivity || 1.5;
+            const dx = deltaX * sens;
+            const dy = deltaY * sens;
+            if (Math.abs(dx) > 0.2 || Math.abs(dy) > 0.2) {
+                state.virtualMouse.x += dx;
+                state.virtualMouse.y += dy;
+                state.virtualMouse.x = Math.max(0, Math.min(state.virtualMouse.x, state.screenWidth));
+                state.virtualMouse.y = Math.max(0, Math.min(state.virtualMouse.y, state.screenHeight));
+                updateVirtualCursorDisplay();
+                emit('mouse_move_relative', { dx: dx, dy: dy, raw: false });
+            }
+        } else {
+            const scale = CONFIG.gameMode.cameraSensitivity / 30;
+            const dx = deltaX * scale;
+            const dy = deltaY * scale;
+            if (Math.abs(dx) > 0.2 || Math.abs(dy) > 0.2) {
+                emit('mouse_move_relative', { dx: dx, dy: dy, raw: true });
+            }
+        }
+    }
+
+    function gamepadSwipeEnd(e) {
+        if (gamepadSwipeState.touchId === null) return;
+        const ended = Array.from(e.changedTouches).some(t => t.identifier === gamepadSwipeState.touchId);
+        if (!ended) return;
+        gamepadSwipeState.touchId = null;
+        state.isTouching = false;
+    }
+
     // 发送相对移动命令到服务端
     function sendRelativeMove(dx, dy) {
         if (!state.virtualMouse) {
@@ -317,6 +398,13 @@ function initTouchMode() {
     // 触摸开始
     overlay.addEventListener('touchstart', (e) => {
         e.preventDefault();
+        if (state.currentMode === 'gamepad') {
+            gamepadSwipeStart(e);
+            return;
+        }
+        if (state.currentMode !== 'touch') {
+            return;
+        }
 
         const now = Date.now();
         const touch = e.touches[0];
@@ -391,6 +479,13 @@ function initTouchMode() {
     // 触摸移动
     overlay.addEventListener('touchmove', (e) => {
         e.preventDefault();
+        if (state.currentMode === 'gamepad') {
+            gamepadSwipeMove(e);
+            return;
+        }
+        if (state.currentMode !== 'touch') {
+            return;
+        }
         if (!state.isTouching) return;
 
         if (e.touches.length === 1 && touchState.touchCount === 1) {
@@ -449,6 +544,13 @@ function initTouchMode() {
     // 触摸结束
     overlay.addEventListener('touchend', (e) => {
         e.preventDefault();
+        if (state.currentMode === 'gamepad') {
+            gamepadSwipeEnd(e);
+            return;
+        }
+        if (state.currentMode !== 'touch') {
+            return;
+        }
 
         const touchDuration = Date.now() - touchState.startTime;
         const remainingTouches = e.touches.length;
@@ -528,6 +630,14 @@ function initTouchMode() {
             touchState.hasMoved = false;
         }
     }, { passive: false });
+
+    overlay.addEventListener('touchcancel', (e) => {
+        e.preventDefault();
+        if (state.currentMode === 'gamepad') {
+            gamepadSwipeEnd(e);
+            return;
+        }
+    }, { passive: false });
 }
 
 // ============ 游戏手柄模式 ============
@@ -536,38 +646,53 @@ function initGamepadMode() {
         emit('gamepad_input', { type: 'movement', x: x, y: y });
     });
 
-    initVirtualStick('right-stick', (x, y) => {
-        // 游戏模式：发送相对鼠标移动，用于控制FPS游戏视角
-        // 使用配置的视角灵敏度
-        const sensitivity = CONFIG.gameMode.cameraSensitivity;
-        const dx = x * sensitivity;
-        const dy = y * sensitivity;
+    document.querySelectorAll('.action-btn, .mouse-btn').forEach(btn => {
+        const keyName = btn.dataset.key;
+        const mouseButton = btn.dataset.mouse;
 
-        // 只在有实际移动时发送
-        if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
-            console.log('[右摇杆] Camera move:', dx.toFixed(2), dy.toFixed(2), 'sensitivity:', sensitivity);
-            emit('mouse_move_relative', { dx: dx, dy: dy });
-        }
-    }, true);
-
-    document.querySelectorAll('.action-btn').forEach(btn => {
-        const buttonName = btn.dataset.btn;
-
-        btn.addEventListener('touchstart', (e) => {
+        const onDown = (e) => {
             e.preventDefault();
             btn.classList.add('pressed');
-            emit('gamepad_input', { type: 'action', button: buttonName, pressed: true });
-        }, { passive: false });
+            if (mouseButton) {
+                emit('mouse_click', { button: mouseButton, action: 'down' });
+            } else if (keyName) {
+                emit('key_event', { key: keyName, action: 'down' });
+            }
+        };
 
-        btn.addEventListener('touchend', (e) => {
+        const onUp = (e) => {
             e.preventDefault();
             btn.classList.remove('pressed');
-            emit('gamepad_input', { type: 'action', button: buttonName, pressed: false });
-        });
+            if (mouseButton) {
+                emit('mouse_click', { button: mouseButton, action: 'up' });
+            } else if (keyName) {
+                emit('key_event', { key: keyName, action: 'up' });
+            }
+        };
+
+        btn.addEventListener('touchstart', onDown, { passive: false });
+        btn.addEventListener('touchend', onUp, { passive: false });
+        btn.addEventListener('touchcancel', onUp, { passive: false });
     });
 
     document.querySelectorAll('.extra-btn').forEach(btn => {
         const keyName = btn.dataset.key;
+        const isToggle = btn.classList.contains('toggle') && keyName === 'Alt';
+
+        if (isToggle) {
+            btn.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                state.gamepadAltLocked = !state.gamepadAltLocked;
+                btn.classList.toggle('locked', state.gamepadAltLocked);
+                emit('key_event', { key: 'Alt', action: state.gamepadAltLocked ? 'down' : 'up' });
+                if (state.gamepadAltLocked) {
+                    updateVirtualCursorDisplay();
+                } else {
+                    updateCursorDotVisibility();
+                }
+            }, { passive: false });
+            return;
+        }
 
         btn.addEventListener('touchstart', (e) => {
             e.preventDefault();
@@ -575,12 +700,27 @@ function initGamepadMode() {
             emit('key_event', { key: keyName, action: 'down' });
         }, { passive: false });
 
-        btn.addEventListener('touchend', (e) => {
+        const onUp = (e) => {
             e.preventDefault();
             btn.classList.remove('pressed');
             emit('key_event', { key: keyName, action: 'up' });
-        });
+        };
+
+        btn.addEventListener('touchend', onUp, { passive: false });
+        btn.addEventListener('touchcancel', onUp, { passive: false });
     });
+}
+
+function releaseGamepadToggles() {
+    if (state.gamepadAltLocked) {
+        emit('key_event', { key: 'Alt', action: 'up' });
+        state.gamepadAltLocked = false;
+        const altBtn = document.querySelector('.extra-btn.toggle[data-key="Alt"]');
+        if (altBtn) {
+            altBtn.classList.remove('locked');
+        }
+        updateCursorDotVisibility();
+    }
 }
 
 function initVirtualStick(elementId, callback, isMouseStick = false) {
@@ -729,12 +869,13 @@ function initModeSwitching() {
 
     const modeDescs = {
         'touch': '触控板模式：单指移动=光标，单指点击=左键，双击并按住=拖拽，双指点击=右键，双指滑动=滚轮',
-        'gamepad': '左摇杆=WASD，右摇杆=视角，ABXY=动作键',
+        'gamepad': '左摇杆=WASD，右侧滑动=视角，右侧按钮=技能/普攻，Alt=长按切换',
         'keyboard': '虚拟键盘输入，支持组合键'
     };
 
     modeBtns.forEach(btn => {
         btn.addEventListener('click', () => {
+            const prevMode = state.currentMode;
             const mode = btn.dataset.mode;
 
             modeBtns.forEach(b => b.classList.remove('active'));
@@ -750,6 +891,10 @@ function initModeSwitching() {
 
             // 通知服务端模式切换
             emit('set_mode', { mode: mode });
+
+            if (prevMode === 'gamepad' && mode !== 'gamepad') {
+                releaseGamepadToggles();
+            }
 
             // 切换游戏模式设置显示
             const gameModeSettings = document.getElementById('game-mode-settings');
@@ -948,6 +1093,8 @@ function init() {
         if (e.target.closest('#touch-overlay') ||
             e.target.closest('.virtual-stick') ||
             e.target.closest('.action-btn') ||
+            e.target.closest('.extra-btn') ||
+            e.target.closest('.mouse-btn') ||
             e.target.closest('.kb-key')) {
             e.preventDefault();
         }

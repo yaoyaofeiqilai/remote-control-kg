@@ -25,6 +25,7 @@ MOUSEEVENTF_HWHEEL = 0x1000
 
 # 键盘事件标志
 KEYEVENTF_KEYUP = 0x0002
+KEYEVENTF_SCANCODE = 0x0008
 
 # 虚拟键码映射
 VK_MAP = {
@@ -131,14 +132,19 @@ def send_mouse_input(dx, dy, flags, data=0):
     return result == 1
 
 
-def send_keyboard_input(vk, flags=0):
+def send_keyboard_input(vk, flags=0, use_scancode=False):
     """发送键盘输入"""
     extra = ctypes.pointer(wintypes.ULONG(0))
     inp = INPUT()
     inp.type = INPUT_KEYBOARD
-    inp.ki.wVk = vk
-    inp.ki.wScan = 0
-    inp.ki.dwFlags = flags
+    if use_scancode:
+        inp.ki.wVk = 0
+        inp.ki.wScan = MapVirtualKey(vk, 0)
+        inp.ki.dwFlags = flags | KEYEVENTF_SCANCODE
+    else:
+        inp.ki.wVk = vk
+        inp.ki.wScan = 0
+        inp.ki.dwFlags = flags
     inp.ki.time = 0
     inp.ki.dwExtraInfo = extra
 
@@ -283,16 +289,20 @@ class InputSender:
 
     def key_down(self, key):
         """按键按下"""
-        vk = VK_MAP.get(key.lower(), ord(key.upper()) if len(key) == 1 else 0)
+        key_lower = key.lower()
+        vk = VK_MAP.get(key_lower, ord(key.upper()) if len(key) == 1 else 0)
         if vk:
-            return send_keyboard_input(vk, 0)
+            use_scancode = key_lower in ('shift', 'ctrl', 'alt')
+            return send_keyboard_input(vk, 0, use_scancode=use_scancode)
         return False
 
     def key_up(self, key):
         """按键抬起"""
-        vk = VK_MAP.get(key.lower(), ord(key.upper()) if len(key) == 1 else 0)
+        key_lower = key.lower()
+        vk = VK_MAP.get(key_lower, ord(key.upper()) if len(key) == 1 else 0)
         if vk:
-            return send_keyboard_input(vk, KEYEVENTF_KEYUP)
+            use_scancode = key_lower in ('shift', 'ctrl', 'alt')
+            return send_keyboard_input(vk, KEYEVENTF_KEYUP, use_scancode=use_scancode)
         return False
 
 

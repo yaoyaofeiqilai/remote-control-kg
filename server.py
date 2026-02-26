@@ -6,6 +6,7 @@
 
 import asyncio
 import base64
+import ctypes
 import io
 import json
 import sys
@@ -79,6 +80,16 @@ game_mode = False  # 游戏模式：使用底层 SendInput，禁用鼠标同步
 input_sender = None
 if INPUT_SENDER_AVAILABLE:
     input_sender = get_input_sender()
+
+def is_running_as_admin():
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+if not is_running_as_admin():
+    print("[提示] 当前未以管理员权限运行：对管理员权限窗口的鼠标/按键注入可能会失效")
+    print("[提示] 请使用 start_admin.bat 以管理员模式启动")
 
 def init_dxgi_camera():
     """初始化 DXGI 相机"""
@@ -340,17 +351,11 @@ def handle_mouse_move_relative(data):
     try:
         dx = data.get('dx', 0)
         dy = data.get('dy', 0)
-        print(f"[DEBUG] mouse_move_relative: dx={dx:.2f}, dy={dy:.2f}, game_mode={game_mode}, input_sender={input_sender is not None}")
-
-        if game_mode and input_sender:
-            # 游戏模式：使用原始输入，直接发送鼠标移动事件
-            # 这样FPS游戏可以正确捕获并用于视角控制
-            print(f"[游戏模式] 视角移动: dx={dx:.2f}, dy={dy:.2f}")
-            result = input_sender.move_relative(dx, dy, raw_input=True)
-            print(f"[游戏模式] SendInput 结果: {result}")
+        raw = data.get('raw', None)
+        raw_input = bool(game_mode) if raw is None else bool(raw)
+        if input_sender:
+            input_sender.move_relative(dx, dy, raw_input=raw_input)
         else:
-            # 非游戏模式：使用 pyautogui
-            print(f"[普通模式] 使用 pyautogui 移动: dx={dx:.2f}, dy={dy:.2f}")
             pyautogui.moveRel(dx, dy, duration=0)
     except Exception as e:
         print(f"鼠标相对移动错误: {e}")
@@ -378,8 +383,7 @@ def handle_mouse_click(data):
         button = data.get('button', 'left')
         action = data.get('action', 'down')
 
-        if game_mode and input_sender:
-            # 使用底层 SendInput
+        if input_sender:
             if action == 'down':
                 if button == 'left':
                     input_sender.left_down()
@@ -452,7 +456,7 @@ def handle_key_event(data):
 
         mapped_key = key_map.get(key, key)
 
-        if game_mode and input_sender:
+        if input_sender:
             if action == 'down':
                 input_sender.key_down(mapped_key)
             else:
@@ -472,7 +476,7 @@ wasd_state = {'w': False, 'a': False, 's': False, 'd': False}
 
 def send_key(key, down):
     """统一按键发送函数"""
-    if game_mode and input_sender:
+    if input_sender:
         if down:
             input_sender.key_down(key)
         else:

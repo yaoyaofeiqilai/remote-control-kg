@@ -384,6 +384,7 @@ body {
     bottom: 20px;
     width: 120px;
     height: 120px;
+    z-index: 55;
 }
 
 #left-stick {
@@ -428,21 +429,22 @@ body {
 /* 动作按钮 */
 #action-buttons {
     position: absolute;
-    bottom: 160px;
-    right: 20px;
+    bottom: 110px;
+    right: 16px;
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 10px;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    z-index: 56;
 }
 
 .action-btn {
-    width: 60px;
-    height: 60px;
+    width: 56px;
+    height: 56px;
     border-radius: 50%;
     border: 2px solid rgba(255, 255, 255, 0.3);
     background: rgba(255, 255, 255, 0.1);
     color: #fff;
-    font-size: 16px;
+    font-size: 15px;
     font-weight: bold;
     cursor: pointer;
     transition: all 0.1s;
@@ -468,6 +470,49 @@ body {
     background: rgba(46, 204, 113, 0.5);
 }
 
+/* 鼠标按钮 */
+#mouse-buttons {
+    position: absolute;
+    bottom: 20px;
+    right: 16px;
+    display: flex;
+    gap: 10px;
+    z-index: 56;
+}
+
+.mouse-btn {
+    width: 72px;
+    height: 52px;
+    border-radius: 14px;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.1s;
+}
+
+.mouse-btn small {
+    font-size: 10px;
+    font-weight: normal;
+    opacity: 0.7;
+}
+
+.mouse-btn:active, .mouse-btn.pressed {
+    transform: scale(0.97);
+    background: rgba(255, 255, 255, 0.3);
+}
+
+.mouse-btn.primary {
+    background: rgba(46, 204, 113, 0.3);
+    border-color: #2ecc71;
+}
+
+.mouse-btn.primary:active, .mouse-btn.primary.pressed {
+    background: rgba(46, 204, 113, 0.5);
+}
+
 /* 额外功能键 */
 #extra-buttons {
     position: absolute;
@@ -476,6 +521,7 @@ body {
     transform: translateX(-50%);
     display: flex;
     gap: 10px;
+    z-index: 56;
 }
 
 .extra-btn {
@@ -492,6 +538,11 @@ body {
 
 .extra-btn:active, .extra-btn.pressed {
     background: rgba(255, 255, 255, 0.3);
+}
+
+.extra-btn.locked {
+    background: rgba(231, 76, 60, 0.35);
+    border-color: rgba(231, 76, 60, 0.7);
 }
 
 /* 虚拟键盘 - 全宽适配 */
