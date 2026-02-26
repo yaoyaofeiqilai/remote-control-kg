@@ -80,6 +80,13 @@ body {
     pointer-events: none;
 }
 
+#screen-video {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    pointer-events: none;
+}
+
 #touch-overlay {
     position: absolute;
     top: 0;

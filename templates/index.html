@@ -19,6 +19,7 @@
         <!-- 主显示区域 - 全屏无遮挡 -->
         <div id="screen-container">
             <img id="screen" src="/video" alt="远程屏幕">
+            <video id="screen-video" class="hidden" autoplay playsinline muted></video>
             <div id="touch-overlay"></div>
 
             <!-- 虚拟鼠标指针 -->
@@ -208,6 +209,12 @@
                             <label>双指缩放灵敏度</label>
                             <input type="range" id="pinch-sensitivity-slider" min="0.1" max="1.0" step="0.05" value="0.25">
                             <span id="pinch-sensitivity-value">0.25</span>
+                        </div>
+
+                        <div class="setting-item">
+                            <label>WebRTC 画面倍率</label>
+                            <input type="range" id="webrtc-scale-slider" min="0.5" max="1.0" step="0.5" value="0.5">
+                            <span id="webrtc-scale-value">0.5x</span>
                         </div>
 
                         <div class="setting-item">

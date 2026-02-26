@@ -9,12 +9,14 @@ import base64
 import ctypes
 import io
 import json
+import os
 import sys
 import threading
 import time
 from datetime import datetime
 
 import mss
+import numpy as np
 
 # 尝试导入 DXGI 捕获库（延迟导入，避免启动时崩溃）
 DXCAM_AVAILABLE = False
@@ -42,7 +44,11 @@ except ImportError as e:
     print("请运行: python -m pip install Pillow")
     exit(1)
 
-from flask import Flask, Response, render_template
+VENDOR_DIR = os.path.join(os.path.dirname(__file__), "vendor", "py312")
+if os.path.isdir(VENDOR_DIR) and VENDOR_DIR not in sys.path:
+    sys.path.insert(0, VENDOR_DIR)
+
+from flask import Flask, Response, render_template, request
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 import pyautogui
@@ -55,6 +61,16 @@ try:
 except Exception as e:
     print(f"[输入] 底层 SendInput API 加载失败: {e}")
     INPUT_SENDER_AVAILABLE = False
+
+WEBRTC_AVAILABLE = False
+try:
+    from aiortc import RTCPeerConnection, RTCSessionDescription
+    from aiortc.rtcrtpsender import RTCRtpSender
+    from aiortc.mediastreams import VideoStreamTrack
+    from av import VideoFrame
+    WEBRTC_AVAILABLE = True
+except Exception as e:
+    print(f"[WebRTC] 依赖加载失败: {e}")
 
 # 配置
 app = Flask(__name__, static_folder='static', template_folder='templates')
@@ -71,9 +87,19 @@ screen_capture_running = False
 quality = 60  # 图像质量 1-95
 fps = 30      # 目标帧率
 
+webrtc_enabled = True
+webrtc_target_fps = 60
+webrtc_scale = 0.5
+webrtc_peers = {}
+webrtc_loop = None
+webrtc_loop_thread = None
+webrtc_frame_pump = None
+
 # DXGI 相机实例
 dxgi_camera = None
 dxgi_capture_enabled = False  # 默认禁用，通过参数或API启用
+
+mss_local = threading.local()
 
 # 输入模式
 game_mode = False  # 游戏模式：使用底层 SendInput，禁用鼠标同步
@@ -104,7 +130,10 @@ def init_dxgi_camera():
 
     try:
         # 创建 DXGI 相机实例
-        dxgi_camera = dxcam.create()
+        try:
+            dxgi_camera = dxcam.create(output_color="RGB")
+        except TypeError:
+            dxgi_camera = dxcam.create()
         print(f"[DXGI] 相机初始化成功，输出分辨率: {dxgi_camera.width}x{dxgi_camera.height}")
         return True
     except Exception as e:
@@ -137,6 +166,17 @@ def get_local_ip():
         return "127.0.0.1"
 
 
+def get_mss():
+    inst = getattr(mss_local, "inst", None)
+    monitor = getattr(mss_local, "monitor", None)
+    if inst is None or monitor is None:
+        inst = mss.mss()
+        monitor = inst.monitors[0]
+        mss_local.inst = inst
+        mss_local.monitor = monitor
+    return inst, monitor
+
+
 def capture_screen():
     """捕获屏幕 - 优先使用 DXGI，失败时回退到 mss"""
     global dxgi_camera
@@ -157,9 +197,7 @@ def capture_screen():
                 img = Image.fromarray(frame)
                 return img
             else:
-                # 帧为空，可能屏幕没有变化或捕获失败
-                # 返回上一帧或继续尝试
-                pass
+                return None
 
         except Exception as e:
             print(f"[DXGI Error] {e}, 回退到 mss")
@@ -168,11 +206,10 @@ def capture_screen():
 
     # 回退到 mss 捕获
     try:
-        with mss.mss() as sct:
-            monitor = sct.monitors[0]
-            screenshot = sct.grab(monitor)
-            img = Image.frombytes("RGB", screenshot.size, screenshot.bgra, "raw", "BGRX")
-            return img
+        inst, monitor = get_mss()
+        screenshot = inst.grab(monitor)
+        img = Image.frombytes("RGB", screenshot.size, screenshot.bgra, "raw", "BGRX")
+        return img
     except Exception as e:
         print(f"[Screen Capture Error] {e}")
         # 返回错误图像
@@ -184,6 +221,111 @@ def capture_screen():
             font = ImageFont.load_default()
         draw.text((100, 100), f"Screen capture error: {e}", fill=(255, 255, 255), font=font)
         return img
+
+
+def capture_screen_rgb_np():
+    global dxgi_camera
+
+    if dxgi_capture_enabled:
+        try:
+            if dxgi_camera is None:
+                if not init_dxgi_camera():
+                    raise Exception("DXGI 初始化失败")
+
+            frame = dxgi_camera.grab()
+            if frame is not None:
+                if frame.ndim == 3 and frame.shape[2] >= 3:
+                    rgb = frame[:, :, :3]
+                    return np.ascontiguousarray(rgb)
+            return None
+        except Exception as e:
+            print(f"[DXGI Error] {e}, 回退到 mss")
+            release_dxgi_camera()
+
+    try:
+        inst, monitor = get_mss()
+        screenshot = inst.grab(monitor)
+        bgra = np.frombuffer(screenshot.bgra, dtype=np.uint8)
+        bgra = bgra.reshape((screenshot.height, screenshot.width, 4))
+        rgb = bgra[:, :, [2, 1, 0]]
+        return np.ascontiguousarray(rgb)
+    except Exception as e:
+        print(f"[Screen Capture Error] {e}")
+        return None
+
+
+class WebRTCFramePump:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._latest = None
+        self._running = False
+        self._thread = None
+
+    def start(self):
+        if self._running:
+            return
+        self._running = True
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._running = False
+
+    def get_latest(self):
+        with self._lock:
+            return self._latest
+
+    def _run(self):
+        global webrtc_target_fps, webrtc_scale
+        while self._running:
+            t0 = time.time()
+            frame = capture_screen_rgb_np()
+            if frame is None:
+                interval = 1.0 / max(1, int(webrtc_target_fps))
+                dt = time.time() - t0
+                sleep_time = interval - dt
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                continue
+            if webrtc_scale == 0.5 and frame is not None:
+                frame = frame[::2, ::2, :]
+                frame = np.ascontiguousarray(frame)
+            with self._lock:
+                self._latest = frame
+
+            interval = 1.0 / max(1, int(webrtc_target_fps))
+            dt = time.time() - t0
+            sleep_time = interval - dt
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+
+
+if WEBRTC_AVAILABLE:
+    class ScreenVideoTrack(VideoStreamTrack):
+        def __init__(self, pump: WebRTCFramePump):
+            super().__init__()
+            self._pump = pump
+            self._last = None
+
+        async def recv(self):
+            global webrtc_target_fps
+            pts, time_base = await self.next_timestamp()
+            frame = self._pump.get_latest()
+            if frame is None:
+                frame = self._last
+            if frame is None:
+                await asyncio.sleep(0.005)
+                frame = self._pump.get_latest()
+
+            if frame is None:
+                h, w = 720, 1280
+                frame = np.zeros((h, w, 3), dtype=np.uint8)
+            self._last = frame
+
+            vf = VideoFrame.from_ndarray(frame, format="rgb24")
+            vf.pts = pts
+            vf.time_base = time_base
+            return vf
 
 
 def screen_to_bytes(img, quality=60):
@@ -199,6 +341,7 @@ def generate_video_stream():
     screen_capture_running = True
     last_error_time = 0
     error_count = 0
+    last_img = None
 
     while screen_capture_running:
         try:
@@ -206,6 +349,11 @@ def generate_video_stream():
 
             # 捕获屏幕
             img = capture_screen()
+            if img is None:
+                img = last_img
+            if img is None:
+                img = Image.new('RGB', (1280, 720), color=(0, 0, 0))
+            last_img = img
 
             # 压缩为JPEG - 使用更快的参数
             buffer = io.BytesIO()
@@ -299,6 +447,135 @@ def handle_disconnect():
     global connected_clients
     connected_clients = max(0, connected_clients - 1)
     print(f"[-] 客户端断开，当前连接数: {connected_clients}")
+
+    sid = request.sid
+    if WEBRTC_AVAILABLE and sid in webrtc_peers and webrtc_loop is not None:
+        asyncio.run_coroutine_threadsafe(_webrtc_close_peer(sid), webrtc_loop)
+
+
+def ensure_webrtc_runtime():
+    global webrtc_loop, webrtc_loop_thread, webrtc_frame_pump, dxgi_capture_enabled
+    if not (WEBRTC_AVAILABLE and webrtc_enabled):
+        return False
+
+    if not dxgi_capture_enabled:
+        dxgi_capture_enabled = True
+        try:
+            if dxgi_camera is None:
+                init_dxgi_camera()
+        except Exception:
+            pass
+
+    if webrtc_loop is None:
+        webrtc_loop = asyncio.new_event_loop()
+
+        def _run():
+            asyncio.set_event_loop(webrtc_loop)
+            webrtc_loop.run_forever()
+
+        webrtc_loop_thread = threading.Thread(target=_run, daemon=True)
+        webrtc_loop_thread.start()
+
+    if webrtc_frame_pump is None:
+        webrtc_frame_pump = WebRTCFramePump()
+        webrtc_frame_pump.start()
+
+    return True
+
+
+async def _webrtc_wait_ice_complete(pc: RTCPeerConnection, timeout_s: float = 2.0):
+    if pc.iceGatheringState == "complete":
+        return
+    done = asyncio.Event()
+
+    @pc.on("icegatheringstatechange")
+    def _on_state_change():
+        if pc.iceGatheringState == "complete":
+            done.set()
+
+    try:
+        await asyncio.wait_for(done.wait(), timeout=timeout_s)
+    except Exception:
+        return
+
+
+async def _webrtc_close_peer(sid: str):
+    pc = webrtc_peers.pop(sid, None)
+    if pc:
+        try:
+            await pc.close()
+        except Exception:
+            pass
+
+    if not webrtc_peers and webrtc_frame_pump is not None:
+        try:
+            webrtc_frame_pump.stop()
+        except Exception:
+            pass
+
+
+async def _webrtc_handle_offer(sid: str, offer_sdp: str, offer_type: str):
+    await _webrtc_close_peer(sid)
+
+    pc = RTCPeerConnection()
+    webrtc_peers[sid] = pc
+
+    @pc.on("connectionstatechange")
+    async def _on_connection_state_change():
+        if pc.connectionState in ("failed", "closed", "disconnected"):
+            await _webrtc_close_peer(sid)
+
+    await pc.setRemoteDescription(RTCSessionDescription(sdp=offer_sdp, type=offer_type))
+
+    if webrtc_frame_pump is not None:
+        track = ScreenVideoTrack(webrtc_frame_pump)
+        attached = False
+        for transceiver in pc.getTransceivers():
+            if transceiver.kind == "video":
+                try:
+                    await transceiver.sender.replaceTrack(track)
+                    attached = True
+                    break
+                except Exception:
+                    pass
+        if not attached:
+            pc.addTrack(track)
+
+    try:
+        caps = RTCRtpSender.getCapabilities("video").codecs
+        h264 = [c for c in caps if (c.name or "").upper() == "H264"]
+        for transceiver in pc.getTransceivers():
+            if transceiver.kind == "video" and hasattr(transceiver, "setCodecPreferences") and h264:
+                transceiver.setCodecPreferences(h264)
+                break
+    except Exception:
+        pass
+
+    answer = await pc.createAnswer()
+    await pc.setLocalDescription(answer)
+    await _webrtc_wait_ice_complete(pc)
+    return {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
+
+
+@socketio.on('webrtc_offer')
+def handle_webrtc_offer(data):
+    if not ensure_webrtc_runtime():
+        emit('webrtc_error', {'error': 'webrtc_not_available'})
+        return
+
+    sid = request.sid
+    offer_sdp = data.get('sdp', '')
+    offer_type = data.get('type', 'offer')
+    if not offer_sdp:
+        emit('webrtc_error', {'error': 'empty_offer'})
+        return
+
+    fut = asyncio.run_coroutine_threadsafe(_webrtc_handle_offer(sid, offer_sdp, offer_type), webrtc_loop)
+    try:
+        answer = fut.result(timeout=15)
+        emit('webrtc_answer', answer)
+    except Exception as e:
+        emit('webrtc_error', {'error': str(e)})
 
 
 @socketio.on('set_mode')
@@ -559,6 +836,18 @@ def handle_set_fps(data, sid=None):
     fps = new_fps
     print(f"[设置] 帧率调整为: {fps}")
     emit('fps_updated', {'fps': fps})
+
+
+@socketio.on('set_webrtc_scale')
+def handle_set_webrtc_scale(data):
+    global webrtc_scale
+    try:
+        scale = float(data.get('scale', webrtc_scale))
+    except Exception:
+        scale = webrtc_scale
+
+    webrtc_scale = 0.5 if scale < 0.75 else 1.0
+    emit('webrtc_scale_updated', {'scale': webrtc_scale})
 
 
 @socketio.on('set_capture_mode')

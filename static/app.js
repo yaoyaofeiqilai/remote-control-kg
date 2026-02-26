@@ -14,6 +14,7 @@ const CONFIG = {
     gameMode: {
         cameraSensitivity: 30,   // 视角灵敏度 (降低后的默认值)
         pinchSensitivity: 0.25,  // 双指缩放灵敏度（deltaDist -> 滚轮 dy）
+        webrtcScale: 0.5,
         showCursorDot: true,      // 是否显示鼠标红点
     }
 };
@@ -38,6 +39,13 @@ const state = {
     },
     gamepadAltLocked: false,
     gamepadTabWheelActive: false,
+    webrtc: {
+        pc: null,
+        using: false,
+    },
+    videoFps: 0,
+    videoFrameCount: 0,
+    lastVideoFpsUpdate: Date.now(),
     fps: 0,
     frameCount: 0,
     lastFpsUpdate: Date.now(),
@@ -45,6 +53,130 @@ const state = {
 
 function isGamepadPointerActive() {
     return state.gamepadAltLocked || state.gamepadTabWheelActive;
+}
+
+function getScreenElement() {
+    const videoEl = document.getElementById('screen-video');
+    if (videoEl && !videoEl.classList.contains('hidden')) return videoEl;
+    return document.getElementById('screen');
+}
+
+function socketOnce(eventName, timeoutMs = 8000) {
+    return new Promise((resolve, reject) => {
+        if (!state.socket) {
+            reject(new Error('no_socket'));
+            return;
+        }
+        let timer = null;
+        const handler = (data) => {
+            if (timer) clearTimeout(timer);
+            state.socket.off(eventName, handler);
+            resolve(data);
+        };
+        state.socket.on(eventName, handler);
+        timer = setTimeout(() => {
+            state.socket.off(eventName, handler);
+            reject(new Error('timeout_' + eventName));
+        }, timeoutMs);
+    });
+}
+
+function startMJPEG() {
+    const screenImg = document.getElementById('screen');
+    const videoEl = document.getElementById('screen-video');
+    if (videoEl) {
+        videoEl.classList.add('hidden');
+        videoEl.srcObject = null;
+    }
+    if (screenImg) {
+        screenImg.classList.remove('hidden');
+        screenImg.src = '/video?' + Date.now();
+    }
+    state.webrtc.using = false;
+}
+
+function stopWebRTC() {
+    if (state.webrtc.pc) {
+        try {
+            state.webrtc.pc.close();
+        } catch (e) {
+        }
+        state.webrtc.pc = null;
+    }
+    state.webrtc.using = false;
+}
+
+function startVideoFrameMonitor() {
+    const videoEl = document.getElementById('screen-video');
+    if (!videoEl || typeof videoEl.requestVideoFrameCallback !== 'function') return;
+
+    const onFrame = () => {
+        state.videoFrameCount++;
+        const now = Date.now();
+        const elapsed = now - state.lastVideoFpsUpdate;
+        if (elapsed >= 1000) {
+            state.videoFps = Math.round((state.videoFrameCount * 1000) / elapsed);
+            state.videoFrameCount = 0;
+            state.lastVideoFpsUpdate = now;
+        }
+        if (state.webrtc.using) {
+            videoEl.requestVideoFrameCallback(onFrame);
+        }
+    };
+
+    state.videoFrameCount = 0;
+    state.lastVideoFpsUpdate = Date.now();
+    videoEl.requestVideoFrameCallback(onFrame);
+}
+
+async function startWebRTC() {
+    if (!window.RTCPeerConnection || !state.socket) return false;
+
+    const videoEl = document.getElementById('screen-video');
+    const screenImg = document.getElementById('screen');
+    if (!videoEl || !screenImg) return false;
+
+    stopWebRTC();
+
+    const pc = new RTCPeerConnection({ iceServers: [] });
+    state.webrtc.pc = pc;
+
+    pc.addTransceiver('video', { direction: 'recvonly' });
+
+    pc.ontrack = (e) => {
+        if (e.streams && e.streams[0]) {
+            videoEl.srcObject = e.streams[0];
+            videoEl.classList.remove('hidden');
+            screenImg.classList.add('hidden');
+            state.webrtc.using = true;
+            startVideoFrameMonitor();
+        }
+    };
+
+    pc.onconnectionstatechange = () => {
+        const s = pc.connectionState;
+        if (s === 'failed' || s === 'closed' || s === 'disconnected') {
+            stopWebRTC();
+            startMJPEG();
+        }
+    };
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    emit('webrtc_offer', { sdp: offer.sdp, type: offer.type });
+
+    const answer = await socketOnce('webrtc_answer', 12000);
+    if (!answer || !answer.sdp) throw new Error('bad_answer');
+    await pc.setRemoteDescription(answer);
+    return true;
+}
+
+async function startVideoTransport() {
+    try {
+        await startWebRTC();
+    } catch (e) {
+        startMJPEG();
+    }
 }
 
 // ============ Socket.IO 连接 ============
@@ -72,6 +204,7 @@ function initSocket() {
         state.connected = false;
         statusEl.textContent = '已断开';
         statusEl.className = 'disconnected';
+        stopWebRTC();
     });
 
     state.socket.on('connect_error', (err) => {
@@ -92,6 +225,8 @@ function initSocket() {
 
         // 开始同步鼠标位置
         startMouseSync();
+
+        startVideoTransport();
     });
 
     // 监听服务端返回的鼠标位置
@@ -115,9 +250,9 @@ function initSocket() {
         }
     });
 
-    // 更新视频流连接 - 添加时间戳防止缓存
-    const screenImg = document.getElementById('screen');
-    screenImg.src = '/video?' + Date.now();
+    state.socket.on('webrtc_error', () => {
+        startMJPEG();
+    });
 }
 
 // 定期同步鼠标位置（每50ms）
@@ -150,7 +285,7 @@ function updateVirtualCursorDisplay() {
         return;
     }
 
-    const screenEl = document.getElementById('screen');
+    const screenEl = getScreenElement();
     const rect = screenEl.getBoundingClientRect();
 
     // 计算缩放比例
@@ -1197,7 +1332,11 @@ function updateFPS() {
 
     if (elapsed >= 1000) {
         state.fps = Math.round((state.frameCount * 1000) / elapsed);
-        document.getElementById('fps-counter').textContent = state.fps + ' FPS';
+        const fpsEl = document.getElementById('fps-counter');
+        if (fpsEl) {
+            const displayFps = state.webrtc.using ? state.videoFps : state.fps;
+            fpsEl.textContent = displayFps + ' FPS';
+        }
         state.frameCount = 0;
         state.lastFpsUpdate = now;
     }
@@ -1227,6 +1366,17 @@ function initGameModeSettings() {
             pinchSensitivityValue.textContent = value.toFixed(2).replace(/\.00$/, '');
             CONFIG.gameMode.pinchSensitivity = value;
             console.log('[Config] 双指缩放灵敏度:', value);
+        });
+    }
+
+    const webrtcScaleSlider = document.getElementById('webrtc-scale-slider');
+    const webrtcScaleValue = document.getElementById('webrtc-scale-value');
+    if (webrtcScaleSlider && webrtcScaleValue) {
+        webrtcScaleSlider.addEventListener('input', () => {
+            const value = parseFloat(webrtcScaleSlider.value);
+            webrtcScaleValue.textContent = value.toFixed(1) + 'x';
+            CONFIG.gameMode.webrtcScale = value;
+            emit('set_webrtc_scale', { scale: value });
         });
     }
 
