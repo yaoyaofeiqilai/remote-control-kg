@@ -15,9 +15,9 @@ from .base import Decoder, Encoder
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_BITRATE = 6000000  # 6 Mbps
-MIN_BITRATE = 1000000  # 1 Mbps
-MAX_BITRATE = 12000000  # 12 Mbps
+DEFAULT_BITRATE = 12000000  # 12 Mbps
+MIN_BITRATE = 2000000  # 2 Mbps
+MAX_BITRATE = 30000000  # 30 Mbps
 
 MAX_FRAME_RATE = 60
 PACKET_MAX = 1300
@@ -131,11 +131,19 @@ def create_encoder_context(
     codec.pix_fmt = "yuv420p"
     codec.framerate = fractions.Fraction(MAX_FRAME_RATE, 1)
     codec.time_base = fractions.Fraction(1, MAX_FRAME_RATE)
-    codec.options = {
+    options = {
         "profile": "baseline",
         "level": "31",
-        "tune": "zerolatency",  # does nothing using h264_omx
+        "tune": "zerolatency",
     }
+    if codec_name == "libx264":
+        options.update(
+            {
+                "preset": "superfast",
+                "x264-params": f"keyint={MAX_FRAME_RATE}:min-keyint={MAX_FRAME_RATE}:scenecut=0:rc-lookahead=0",
+            }
+        )
+    codec.options = options
     codec.open()
     return codec, codec_name == "h264_omx"
 
@@ -287,17 +295,18 @@ class H264Encoder(Encoder):
             frame.pict_type = av.video.frame.PictureType.NONE
 
         if self.codec is None:
-            try:
-                self.codec, self.codec_buffering = create_encoder_context(
-                    "h264_omx", frame.width, frame.height, bitrate=self.target_bitrate
-                )
-            except Exception:
-                self.codec, self.codec_buffering = create_encoder_context(
-                    "libx264",
-                    frame.width,
-                    frame.height,
-                    bitrate=self.target_bitrate,
-                )
+            last_error = None
+            for codec_name in ("h264_nvenc", "h264_qsv", "h264_amf", "h264_omx", "libx264"):
+                try:
+                    self.codec, self.codec_buffering = create_encoder_context(
+                        codec_name, frame.width, frame.height, bitrate=self.target_bitrate
+                    )
+                    break
+                except Exception as e:
+                    last_error = e
+                    self.codec = None
+            if self.codec is None:
+                raise last_error
 
         data_to_send = b""
         for package in self.codec.encode(frame):

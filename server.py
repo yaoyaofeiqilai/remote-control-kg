@@ -134,6 +134,11 @@ def init_dxgi_camera():
             dxgi_camera = dxcam.create(output_color="RGB")
         except TypeError:
             dxgi_camera = dxcam.create()
+        try:
+            if hasattr(dxgi_camera, "start"):
+                dxgi_camera.start(target_fps=webrtc_target_fps)
+        except Exception:
+            pass
         print(f"[DXGI] 相机初始化成功，输出分辨率: {dxgi_camera.width}x{dxgi_camera.height}")
         return True
     except Exception as e:
@@ -232,10 +237,15 @@ def capture_screen_rgb_np():
                 if not init_dxgi_camera():
                     raise Exception("DXGI 初始化失败")
 
-            frame = dxgi_camera.grab()
+            if hasattr(dxgi_camera, "get_latest_frame"):
+                frame = dxgi_camera.get_latest_frame()
+            else:
+                frame = dxgi_camera.grab()
             if frame is not None:
                 if frame.ndim == 3 and frame.shape[2] >= 3:
                     rgb = frame[:, :, :3]
+                    if rgb.flags["C_CONTIGUOUS"]:
+                        return rgb
                     return np.ascontiguousarray(rgb)
             return None
         except Exception as e:

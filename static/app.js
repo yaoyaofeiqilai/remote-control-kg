@@ -43,6 +43,15 @@ const state = {
         pc: null,
         using: false,
     },
+    webrtcStats: {
+        bitrateMbps: 0,
+        packetsLost: 0,
+        framesDropped: 0,
+        jitterMs: 0,
+        lastBytes: 0,
+        lastTs: 0,
+        timer: null,
+    },
     videoFps: 0,
     videoFrameCount: 0,
     lastVideoFpsUpdate: Date.now(),
@@ -96,6 +105,10 @@ function startMJPEG() {
 }
 
 function stopWebRTC() {
+    if (state.webrtcStats.timer) {
+        clearInterval(state.webrtcStats.timer);
+        state.webrtcStats.timer = null;
+    }
     if (state.webrtc.pc) {
         try {
             state.webrtc.pc.close();
@@ -104,6 +117,41 @@ function stopWebRTC() {
         state.webrtc.pc = null;
     }
     state.webrtc.using = false;
+}
+
+function startWebRTCStats() {
+    if (!state.webrtc.pc) return;
+    if (state.webrtcStats.timer) return;
+    if (typeof state.webrtc.pc.getStats !== 'function') return;
+
+    state.webrtcStats.lastBytes = 0;
+    state.webrtcStats.lastTs = 0;
+
+    state.webrtcStats.timer = setInterval(async () => {
+        if (!state.webrtc.using || !state.webrtc.pc) return;
+        try {
+            const stats = await state.webrtc.pc.getStats();
+            let inbound = null;
+            stats.forEach((r) => {
+                if (r.type === 'inbound-rtp' && r.kind === 'video') inbound = r;
+            });
+            if (!inbound) return;
+
+            const nowTs = inbound.timestamp || performance.now();
+            const bytes = inbound.bytesReceived || 0;
+            if (state.webrtcStats.lastTs) {
+                const dt = (nowTs - state.webrtcStats.lastTs) / 1000;
+                const db = bytes - state.webrtcStats.lastBytes;
+                if (dt > 0) state.webrtcStats.bitrateMbps = (db * 8) / 1e6 / dt;
+            }
+            state.webrtcStats.lastTs = nowTs;
+            state.webrtcStats.lastBytes = bytes;
+            state.webrtcStats.packetsLost = inbound.packetsLost || 0;
+            state.webrtcStats.framesDropped = inbound.framesDropped || 0;
+            state.webrtcStats.jitterMs = inbound.jitter ? inbound.jitter * 1000 : 0;
+        } catch (e) {
+        }
+    }, 1000);
 }
 
 function startVideoFrameMonitor() {
@@ -150,6 +198,7 @@ async function startWebRTC() {
             screenImg.classList.add('hidden');
             state.webrtc.using = true;
             startVideoFrameMonitor();
+            startWebRTCStats();
         }
     };
 
@@ -1335,7 +1384,12 @@ function updateFPS() {
         const fpsEl = document.getElementById('fps-counter');
         if (fpsEl) {
             const displayFps = state.webrtc.using ? state.videoFps : state.fps;
-            fpsEl.textContent = displayFps + ' FPS';
+            if (state.webrtc.using) {
+                const mbps = state.webrtcStats.bitrateMbps || 0;
+                fpsEl.textContent = displayFps + ' FPS ' + mbps.toFixed(1) + ' Mbps';
+            } else {
+                fpsEl.textContent = displayFps + ' FPS';
+            }
         }
         state.frameCount = 0;
         state.lastFpsUpdate = now;
