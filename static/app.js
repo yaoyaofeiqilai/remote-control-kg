@@ -832,6 +832,7 @@ function initTouchMode() {
             if (totalMoveX > 3 || totalMoveY > 3) {
                 touchState.isMoving = true;
                 touchState.hasMoved = true;
+                cancelPendingClick();
                 // 注意：单指滑动只是移动鼠标，不会自动进入拖拽模式
                 // 拖拽需要通过双击并按住来实现
             }
