@@ -57,7 +57,10 @@ const state = {
         index: null,
         enabled: false,
         connected: false,
-        polling: false,
+        serverAttached: false,
+        pollTimer: null,
+        missCount: 0,
+        lastConnectAt: 0,
         lastSentAt: 0,
         lastPayloadKey: '',
     },
@@ -256,11 +259,20 @@ function initSocket() {
         state.connected = true;
         statusEl.textContent = '已连接';
         statusEl.className = 'connected';
+        if (state.currentMode === 'controller' &&
+            state.physicalGamepad &&
+            typeof state.physicalGamepad.setEnabled === 'function') {
+            state.physicalGamepad.setEnabled(true);
+        }
     });
 
     state.socket.on('disconnect', () => {
         console.log('[Socket] 已断开');
         state.connected = false;
+        if (state.physicalGamepad) {
+            state.physicalGamepad.serverAttached = false;
+            state.physicalGamepad.connected = false;
+        }
         statusEl.textContent = '已断开';
         statusEl.className = 'disconnected';
         stopWebRTC();
@@ -1116,10 +1128,14 @@ function initPhysicalGamepadForwarding() {
         const pads = navigator.getGamepads();
         if (!pads) return null;
         if (state.physicalGamepad.index !== null && pads[state.physicalGamepad.index]) {
-            return pads[state.physicalGamepad.index];
+            const selected = pads[state.physicalGamepad.index];
+            if (selected && selected.connected) {
+                return selected;
+            }
+            state.physicalGamepad.index = null;
         }
         for (const p of pads) {
-            if (p) return p;
+            if (p && p.connected) return p;
         }
         return null;
     };
@@ -1133,46 +1149,58 @@ function initPhysicalGamepadForwarding() {
     const connectIfPossible = (gp) => {
         if (!state.connected || !state.physicalGamepad.enabled) return;
         if (!gp) gp = getActivePad();
-        if (!gp) return;
+        if (!gp || !gp.connected) return;
 
         state.physicalGamepad.active = true;
         state.physicalGamepad.connected = true;
         state.physicalGamepad.index = gp.index;
+        state.physicalGamepad.missCount = 0;
         state.physicalGamepad.lastSentAt = 0;
         state.physicalGamepad.lastPayloadKey = '';
+        state.physicalGamepad.lastConnectAt = Date.now();
         emit('xinput_connect', { connected: true, id: gp.id || '' });
         sendNeutral();
     };
 
-    const disconnectNow = () => {
+    const disconnectNow = (hard = false) => {
         if (state.physicalGamepad.connected) {
             sendNeutral();
-            emit('xinput_disconnect', {});
+            if (hard) {
+                emit('xinput_disconnect', {});
+            }
         }
         state.physicalGamepad.active = false;
         state.physicalGamepad.connected = false;
         state.physicalGamepad.index = null;
+        state.physicalGamepad.missCount = 0;
         state.physicalGamepad.lastSentAt = 0;
         state.physicalGamepad.lastPayloadKey = '';
     };
 
-    const poll = (now) => {
-        if (!state.physicalGamepad.enabled) {
-            state.physicalGamepad.polling = false;
-            return;
-        }
-        requestAnimationFrame(poll);
-
+    const pollOnce = () => {
+        if (!state.physicalGamepad.enabled) return;
         if (!state.connected || document.hidden) return;
-
         const gp = getActivePad();
-        if (!gp) {
-            if (state.physicalGamepad.connected) disconnectNow();
+        if (!gp || !gp.connected) {
+            state.physicalGamepad.missCount = (state.physicalGamepad.missCount || 0) + 1;
+            // 避免浏览器偶发一帧拿不到手柄就断开
+            if (state.physicalGamepad.connected && state.physicalGamepad.missCount > 30) {
+                disconnectNow(false);
+            }
             return;
         }
+        state.physicalGamepad.missCount = 0;
+
         if (!state.physicalGamepad.connected) {
             connectIfPossible(gp);
             if (!state.physicalGamepad.connected) return;
+        } else {
+            // 心跳重连：修复模式切回后服务端 owner 丢失导致无响应
+            const nowConnect = Date.now();
+            if (!state.physicalGamepad.lastConnectAt || (nowConnect - state.physicalGamepad.lastConnectAt) > 1500) {
+                state.physicalGamepad.lastConnectAt = nowConnect;
+                emit('xinput_connect', { connected: true, id: gp.id || '' });
+            }
         }
 
         const axes = gp.axes || [];
@@ -1208,6 +1236,7 @@ function initPhysicalGamepadForwarding() {
         const key = `${lx},${ly},${rx},${ry},${lt},${rt},${mask}`;
         if (key === state.physicalGamepad.lastPayloadKey) return;
 
+        const now = Date.now();
         const lastAt = state.physicalGamepad.lastSentAt || 0;
         if (now - lastAt < 16) return;
 
@@ -1218,16 +1247,19 @@ function initPhysicalGamepadForwarding() {
 
     state.physicalGamepad.setEnabled = (enabled) => {
         const on = !!enabled;
-        if (state.physicalGamepad.enabled === on) return;
-        state.physicalGamepad.enabled = on;
         if (!on) {
+            state.physicalGamepad.enabled = false;
             disconnectNow();
             return;
         }
+
+        state.physicalGamepad.enabled = true;
+        state.physicalGamepad.index = null;
+        state.physicalGamepad.missCount = 0;
+        state.physicalGamepad.lastConnectAt = 0;
         connectIfPossible();
-        if (!state.physicalGamepad.polling) {
-            state.physicalGamepad.polling = true;
-            requestAnimationFrame(poll);
+        if (state.physicalGamepad.connected) {
+            sendNeutral();
         }
     };
 
@@ -1246,12 +1278,27 @@ function initPhysicalGamepadForwarding() {
     });
 
     document.addEventListener('visibilitychange', () => {
-        if (document.hidden) sendNeutral();
+        if (document.hidden) {
+            sendNeutral();
+            return;
+        }
+        if (state.physicalGamepad.enabled) {
+            connectIfPossible();
+        }
     });
 
     window.addEventListener('beforeunload', () => {
+        if (state.physicalGamepad.pollTimer !== null) {
+            clearInterval(state.physicalGamepad.pollTimer);
+            state.physicalGamepad.pollTimer = null;
+        }
         disconnectNow();
     });
+
+    // 常驻轮询（16ms）：比 RAF 在移动端模式切换时更稳定
+    if (state.physicalGamepad.pollTimer === null) {
+        state.physicalGamepad.pollTimer = setInterval(pollOnce, 16);
+    }
 }
 
 function releaseGamepadToggles() {
@@ -1745,6 +1792,247 @@ function updateCursorDotVisibility() {
 }
 
 // ============ 初始化 ============
+// Override: stable physical gamepad forwarding implementation.
+function initPhysicalGamepadForwarding() {
+    if (typeof navigator === 'undefined' || typeof navigator.getGamepads !== 'function') return;
+
+    const toI16 = (v) => {
+        const x = Math.max(-1, Math.min(1, v || 0));
+        return Math.max(-32768, Math.min(32767, Math.round(x * 32767)));
+    };
+
+    const applyDeadzone = (v, dz = 0.08) => {
+        const x = v || 0;
+        return Math.abs(x) < dz ? 0 : x;
+    };
+
+    const getPadActivityScore = (p) => {
+        if (!p || !p.connected) return -1;
+        let score = 0;
+        const axes = p.axes || [];
+        const buttons = p.buttons || [];
+        for (const a of axes) {
+            score += Math.abs(a || 0);
+        }
+        for (const b of buttons) {
+            if (!b) continue;
+            score += (b.value || 0);
+            if (b.pressed) score += 1.0;
+        }
+        return score;
+    };
+
+    const getActivePad = () => {
+        const pads = navigator.getGamepads();
+        if (!pads) return null;
+        const connected = [];
+        for (const p of pads) {
+            if (p && p.connected) connected.push(p);
+        }
+        if (connected.length === 0) return null;
+
+        let selected = null;
+        if (state.physicalGamepad.index !== null && pads[state.physicalGamepad.index]) {
+            selected = pads[state.physicalGamepad.index];
+            if (!(selected && selected.connected)) {
+                selected = null;
+                state.physicalGamepad.index = null;
+            }
+        }
+
+        let best = connected[0];
+        let bestScore = getPadActivityScore(best);
+        for (const p of connected) {
+            const s = getPadActivityScore(p);
+            if (s > bestScore) {
+                best = p;
+                bestScore = s;
+            }
+        }
+
+        if (!selected) return best;
+        const selectedScore = getPadActivityScore(selected);
+        if (selectedScore <= 0.01 && bestScore > 0.2) {
+            state.physicalGamepad.index = best.index;
+            return best;
+        }
+        return selected;
+    };
+
+    const sendNeutral = () => {
+        if (!state.connected) return;
+        emit('xinput_state', { lx: 0, ly: 0, rx: 0, ry: 0, lt: 0, rt: 0, buttons: 0 });
+        state.physicalGamepad.lastPayloadKey = '0,0,0,0,0,0,0';
+    };
+
+    const connectIfPossible = (gp) => {
+        if (!state.connected || !state.physicalGamepad.enabled) return;
+        if (!gp) gp = getActivePad();
+        if (!gp || !gp.connected) return;
+
+        const needConnectEvent = !state.physicalGamepad.connected || !state.physicalGamepad.serverAttached;
+        state.physicalGamepad.active = true;
+        state.physicalGamepad.connected = true;
+        state.physicalGamepad.index = gp.index;
+        state.physicalGamepad.missCount = 0;
+        state.physicalGamepad.lastSentAt = 0;
+        state.physicalGamepad.lastPayloadKey = '';
+        state.physicalGamepad.lastConnectAt = Date.now();
+
+        if (needConnectEvent) {
+            emit('xinput_connect', { connected: true, id: gp.id || '' });
+            state.physicalGamepad.serverAttached = true;
+        }
+        sendNeutral();
+    };
+
+    const disconnectNow = (hard = false) => {
+        if (state.physicalGamepad.connected) {
+            sendNeutral();
+            if (hard && state.physicalGamepad.serverAttached) {
+                emit('xinput_disconnect', {});
+                state.physicalGamepad.serverAttached = false;
+            }
+        }
+        state.physicalGamepad.active = false;
+        state.physicalGamepad.connected = false;
+        state.physicalGamepad.index = null;
+        state.physicalGamepad.missCount = 0;
+        state.physicalGamepad.lastSentAt = 0;
+        state.physicalGamepad.lastPayloadKey = '';
+        state.physicalGamepad.lastConnectAt = 0;
+    };
+
+    const pauseForwarding = () => {
+        if (state.physicalGamepad.connected) {
+            sendNeutral();
+        }
+        state.physicalGamepad.enabled = false;
+        state.physicalGamepad.missCount = 0;
+        state.physicalGamepad.lastSentAt = 0;
+        state.physicalGamepad.lastPayloadKey = '0,0,0,0,0,0,0';
+    };
+
+    const pollOnce = () => {
+        if (!state.physicalGamepad.enabled) return;
+        if (!state.connected || document.hidden) return;
+
+        const gp = getActivePad();
+        if (!gp || !gp.connected) {
+            state.physicalGamepad.missCount = (state.physicalGamepad.missCount || 0) + 1;
+            if (state.physicalGamepad.connected && state.physicalGamepad.missCount > 30) {
+                disconnectNow(false);
+            }
+            return;
+        }
+        state.physicalGamepad.missCount = 0;
+
+        if (!state.physicalGamepad.connected) {
+            connectIfPossible(gp);
+            if (!state.physicalGamepad.connected) return;
+        } else {
+            const nowConnect = Date.now();
+            if (!state.physicalGamepad.lastConnectAt || (nowConnect - state.physicalGamepad.lastConnectAt) > 1500) {
+                state.physicalGamepad.lastConnectAt = nowConnect;
+                emit('xinput_connect', { connected: true, id: gp.id || '' });
+                state.physicalGamepad.serverAttached = true;
+            }
+        }
+
+        const axes = gp.axes || [];
+        const buttons = gp.buttons || [];
+        const lx = toI16(applyDeadzone(axes[0]));
+        const ly = toI16(applyDeadzone(-(axes[1] || 0)));
+        const rx = toI16(applyDeadzone(axes[2] || 0));
+        const ry = toI16(applyDeadzone(-(axes[3] || 0)));
+        const lt = Math.max(0, Math.min(255, Math.round(((buttons[6] && buttons[6].value) || 0) * 255)));
+        const rt = Math.max(0, Math.min(255, Math.round(((buttons[7] && buttons[7].value) || 0) * 255)));
+
+        const pressed = (idx) => !!(buttons[idx] && buttons[idx].pressed);
+        let mask = 0;
+        if (pressed(12)) mask |= 0x0001;
+        if (pressed(13)) mask |= 0x0002;
+        if (pressed(14)) mask |= 0x0004;
+        if (pressed(15)) mask |= 0x0008;
+        if (pressed(9)) mask |= 0x0010;
+        if (pressed(8)) mask |= 0x0020;
+        if (pressed(10)) mask |= 0x0040;
+        if (pressed(11)) mask |= 0x0080;
+        if (pressed(4)) mask |= 0x0100;
+        if (pressed(5)) mask |= 0x0200;
+        if (pressed(16)) mask |= 0x0400;
+        if (pressed(0)) mask |= 0x1000;
+        if (pressed(1)) mask |= 0x2000;
+        if (pressed(2)) mask |= 0x4000;
+        if (pressed(3)) mask |= 0x8000;
+
+        const key = `${lx},${ly},${rx},${ry},${lt},${rt},${mask}`;
+        if (key === state.physicalGamepad.lastPayloadKey) return;
+
+        const now = Date.now();
+        const lastAt = state.physicalGamepad.lastSentAt || 0;
+        if (now - lastAt < 16) return;
+
+        state.physicalGamepad.lastSentAt = now;
+        state.physicalGamepad.lastPayloadKey = key;
+        emit('xinput_state', { lx, ly, rx, ry, lt, rt, buttons: mask });
+    };
+
+    state.physicalGamepad.setEnabled = (enabled) => {
+        const on = !!enabled;
+        if (!on) {
+            pauseForwarding();
+            return;
+        }
+
+        state.physicalGamepad.enabled = true;
+        state.physicalGamepad.missCount = 0;
+        state.physicalGamepad.lastConnectAt = 0;
+        connectIfPossible();
+        if (state.physicalGamepad.connected) {
+            emit('xinput_connect', { connected: true, id: '' });
+            state.physicalGamepad.serverAttached = true;
+            sendNeutral();
+        }
+    };
+
+    window.addEventListener('gamepadconnected', (e) => {
+        const gp = e.gamepad;
+        state.physicalGamepad.index = gp ? gp.index : state.physicalGamepad.index;
+        if (state.physicalGamepad.enabled) {
+            connectIfPossible(gp);
+        }
+    });
+
+    window.addEventListener('gamepaddisconnected', (e) => {
+        if (state.physicalGamepad.index === (e.gamepad && e.gamepad.index)) {
+            disconnectNow(false);
+        }
+    });
+
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+            sendNeutral();
+            return;
+        }
+        if (state.physicalGamepad.enabled) {
+            connectIfPossible();
+        }
+    });
+
+    window.addEventListener('beforeunload', () => {
+        if (state.physicalGamepad.pollTimer !== null) {
+            clearInterval(state.physicalGamepad.pollTimer);
+            state.physicalGamepad.pollTimer = null;
+        }
+        disconnectNow(true);
+    });
+
+    if (state.physicalGamepad.pollTimer === null) {
+        state.physicalGamepad.pollTimer = setInterval(pollOnce, 16);
+    }
+}
+
 function init() {
     initSocket();
     initTouchMode();

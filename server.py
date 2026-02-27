@@ -13,6 +13,7 @@ import os
 import sys
 import threading
 import time
+from collections import deque
 from datetime import datetime
 
 import mss
@@ -110,6 +111,9 @@ webrtc_frame_pump = None
 # DXGI 相机实例
 dxgi_camera = None
 dxgi_capture_enabled = False  # 默认禁用，通过参数或API启用
+dxgi_lock = threading.RLock()
+dxgi_failure_count = 0
+dxgi_retry_after = 0.0
 
 mss_local = threading.local()
 
@@ -119,10 +123,18 @@ input_sender = None
 if INPUT_SENDER_AVAILABLE:
     input_sender = get_input_sender()
 
-xinput_lock = threading.Lock()
+xinput_lock = threading.RLock()
 xinput_pad = None
 xinput_owner_sid = None
 xinput_last_buttons = 0
+xinput_state_count = 0
+xinput_state_last_log = 0.0
+xinput_state_queue = deque(maxlen=256)
+xinput_state_event = threading.Event()
+xinput_worker_started = False
+xinput_apply_count = 0
+xinput_apply_nonzero = 0
+xinput_apply_last_log = 0.0
 
 def is_running_as_admin():
     try:
@@ -136,43 +148,68 @@ if not is_running_as_admin():
 
 def init_dxgi_camera():
     """初始化 DXGI 相机"""
-    global dxgi_camera, dxcam
+    global dxgi_camera, dxcam, dxgi_failure_count, dxgi_retry_after
 
     # 延迟加载 dxcam
     if dxcam is None and not load_dxcam():
         return False
 
-    if dxgi_camera is not None:
-        return False
+    with dxgi_lock:
+        if dxgi_camera is not None:
+            return True
 
-    try:
-        # 创建 DXGI 相机实例
         try:
-            dxgi_camera = dxcam.create(output_color="RGB")
-        except TypeError:
-            dxgi_camera = dxcam.create()
-        try:
-            if hasattr(dxgi_camera, "start"):
-                dxgi_camera.start(target_fps=webrtc_target_fps)
-        except Exception:
-            pass
-        print(f"[DXGI] 相机初始化成功，输出分辨率: {dxgi_camera.width}x{dxgi_camera.height}")
-        return True
-    except Exception as e:
-        print(f"[DXGI] 初始化失败: {e}")
-        dxgi_camera = None
-        return False
+            # 创建 DXGI 相机实例
+            try:
+                dxgi_camera = dxcam.create(output_color="RGB")
+            except TypeError:
+                dxgi_camera = dxcam.create()
+            try:
+                if hasattr(dxgi_camera, "start"):
+                    dxgi_camera.start(target_fps=webrtc_target_fps)
+            except Exception:
+                pass
+            dxgi_failure_count = 0
+            dxgi_retry_after = 0.0
+            print(f"[DXGI] 相机初始化成功，输出分辨率: {dxgi_camera.width}x{dxgi_camera.height}")
+            return True
+        except Exception as e:
+            print(f"[DXGI] 初始化失败: {e}")
+            dxgi_camera = None
+            return False
 
 def release_dxgi_camera():
     """释放 DXGI 相机"""
     global dxgi_camera
-    if dxgi_camera:
-        try:
-            dxgi_camera.release()
-            print("[DXGI] 相机已释放")
-        except Exception as e:
-            print(f"[DXGI] 释放失败: {e}")
-        dxgi_camera = None
+    with dxgi_lock:
+        if dxgi_camera:
+            try:
+                if hasattr(dxgi_camera, "stop"):
+                    try:
+                        dxgi_camera.stop()
+                    except Exception:
+                        pass
+                dxgi_camera.release()
+                print("[DXGI] 相机已释放")
+            except Exception as e:
+                print(f"[DXGI] 释放失败: {e}")
+            dxgi_camera = None
+
+
+def handle_dxgi_error(err):
+    """记录 DXGI 错误并进入退避，避免失败后高频重建导致屏闪。"""
+    global dxgi_failure_count, dxgi_retry_after
+    dxgi_failure_count = min(dxgi_failure_count + 1, 8)
+    backoff = min(30.0, float(2 ** (dxgi_failure_count - 1)))
+    dxgi_retry_after = time.time() + backoff
+    print(f"[DXGI Error] {err}, 回退到 mss，{backoff:.0f}s 后重试")
+    release_dxgi_camera()
+
+
+def should_try_dxgi():
+    if not dxgi_capture_enabled:
+        return False
+    return time.time() >= dxgi_retry_after
 
 
 def get_local_ip():
@@ -204,15 +241,16 @@ def capture_screen():
     global dxgi_camera
 
     # 尝试使用 DXGI 捕获
-    if dxgi_capture_enabled:
+    if should_try_dxgi():
         try:
             # 延迟初始化相机
-            if dxgi_camera is None:
-                if not init_dxgi_camera():
-                    raise Exception("DXGI 初始化失败")
+            with dxgi_lock:
+                if dxgi_camera is None:
+                    if not init_dxgi_camera():
+                        raise Exception("DXGI 初始化失败")
 
-            # 捕获帧 (返回 numpy 数组)
-            frame = dxgi_camera.grab()
+                # 捕获帧 (返回 numpy 数组)
+                frame = dxgi_camera.grab()
 
             if frame is not None:
                 # numpy 数组转 PIL Image
@@ -222,9 +260,7 @@ def capture_screen():
                 return None
 
         except Exception as e:
-            print(f"[DXGI Error] {e}, 回退到 mss")
-            # 释放失败的 DXGI 相机
-            release_dxgi_camera()
+            handle_dxgi_error(e)
 
     # 回退到 mss 捕获
     try:
@@ -248,16 +284,17 @@ def capture_screen():
 def capture_screen_rgb_np():
     global dxgi_camera
 
-    if dxgi_capture_enabled:
+    if should_try_dxgi():
         try:
-            if dxgi_camera is None:
-                if not init_dxgi_camera():
-                    raise Exception("DXGI 初始化失败")
+            with dxgi_lock:
+                if dxgi_camera is None:
+                    if not init_dxgi_camera():
+                        raise Exception("DXGI 初始化失败")
 
-            if hasattr(dxgi_camera, "get_latest_frame"):
-                frame = dxgi_camera.get_latest_frame()
-            else:
-                frame = dxgi_camera.grab()
+                if hasattr(dxgi_camera, "get_latest_frame"):
+                    frame = dxgi_camera.get_latest_frame()
+                else:
+                    frame = dxgi_camera.grab()
             if frame is not None:
                 if frame.ndim == 3 and frame.shape[2] >= 3:
                     rgb = frame[:, :, :3]
@@ -266,8 +303,7 @@ def capture_screen_rgb_np():
                     return np.ascontiguousarray(rgb)
             return None
         except Exception as e:
-            print(f"[DXGI Error] {e}, 回退到 mss")
-            release_dxgi_camera()
+            handle_dxgi_error(e)
 
     try:
         inst, monitor = get_mss()
@@ -486,7 +522,8 @@ def handle_disconnect():
                     xinput_pad.update()
             except Exception:
                 pass
-            xinput_pad = None
+            if xinput_state_queue:
+                xinput_state_queue.clear()
             xinput_owner_sid = None
             xinput_last_buttons = 0
     if WEBRTC_AVAILABLE and sid in webrtc_peers and webrtc_loop is not None:
@@ -805,6 +842,61 @@ def send_key(key, down):
             pyautogui.keyUp(key)
 
 
+def _xinput_worker_loop():
+    global xinput_pad, xinput_last_buttons
+    global xinput_apply_count, xinput_apply_nonzero, xinput_apply_last_log
+    while True:
+        xinput_state_event.wait()
+        while True:
+            with xinput_lock:
+                if not xinput_state_queue:
+                    xinput_state_event.clear()
+                    break
+                item = xinput_state_queue.popleft()
+            sid, payload = item
+            pad = _xinput_ensure_for_sid(sid)
+            if pad is None:
+                continue
+            ok = _xinput_apply_state(pad, payload or {})
+            if ok:
+                xinput_apply_count += 1
+                if payload:
+                    if int(payload.get('buttons', 0) or 0) != 0 or \
+                       int(payload.get('lt', 0) or 0) != 0 or \
+                       int(payload.get('rt', 0) or 0) != 0 or \
+                       int(payload.get('lx', 0) or 0) != 0 or \
+                       int(payload.get('ly', 0) or 0) != 0 or \
+                       int(payload.get('rx', 0) or 0) != 0 or \
+                       int(payload.get('ry', 0) or 0) != 0:
+                        xinput_apply_nonzero += 1
+                now = time.time()
+                if now - xinput_apply_last_log >= 1.0:
+                    print(f"[手柄] xinput_state 已应用: {xinput_apply_count}/s, 非零: {xinput_apply_nonzero}/s")
+                    xinput_apply_last_log = now
+                    xinput_apply_count = 0
+                    xinput_apply_nonzero = 0
+            if not ok:
+                with xinput_lock:
+                    if xinput_pad is pad:
+                        try:
+                            xinput_pad.reset()
+                            xinput_pad.update()
+                        except Exception:
+                            pass
+                        xinput_pad = None
+                        xinput_last_buttons = 0
+
+
+def _xinput_start_worker_once():
+    global xinput_worker_started
+    with xinput_lock:
+        if xinput_worker_started:
+            return
+        t = threading.Thread(target=_xinput_worker_loop, daemon=True, name="XInputWorker")
+        t.start()
+        xinput_worker_started = True
+
+
 def _xinput_clamp_i16(v):
     try:
         x = int(v)
@@ -845,21 +937,29 @@ def _xinput_ensure_for_sid(sid):
     if not XINPUT_AVAILABLE or vg is None or XUSB_BUTTON is None:
         return None
     with xinput_lock:
-        if xinput_pad is None or xinput_owner_sid != sid:
+        if xinput_pad is None:
             try:
-                if xinput_pad is not None:
-                    xinput_pad.reset()
-                    xinput_pad.update()
-            except Exception:
-                pass
-            xinput_pad = vg.VX360Gamepad()
-            xinput_owner_sid = sid
-            xinput_last_buttons = 0
+                xinput_pad = vg.VX360Gamepad()
+            except Exception as e:
+                print(f"[手柄] 创建虚拟手柄失败: {e}")
+                xinput_pad = None
+                xinput_owner_sid = None
+                xinput_last_buttons = 0
+                return None
             try:
                 xinput_pad.reset()
                 xinput_pad.update()
             except Exception:
                 pass
+        if xinput_owner_sid != sid:
+            # 仅移交控制权，不重建虚拟手柄，避免游戏端丢失设备绑定
+            try:
+                xinput_pad.reset()
+                xinput_pad.update()
+            except Exception:
+                pass
+            xinput_owner_sid = sid
+            xinput_last_buttons = 0
         return xinput_pad
 
 
@@ -883,8 +983,9 @@ def _xinput_apply_state(pad, payload):
         pad.right_joystick(x_value=rx, y_value=ry)
         pad.left_trigger(value=lt)
         pad.right_trigger(value=rt)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[手柄] 设置摇杆/扳机失败: {e}")
+        return False
 
     prev = xinput_last_buttons
     for bit, btn_factory in _XINPUT_BUTTON_MAP.items():
@@ -908,8 +1009,10 @@ def _xinput_apply_state(pad, payload):
     xinput_last_buttons = buttons
     try:
         pad.update()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[手柄] 提交手柄状态失败: {e}")
+        return False
+    return True
 
 
 @socketio.on('xinput_connect')
@@ -918,6 +1021,7 @@ def handle_xinput_connect(data):
     if not XINPUT_AVAILABLE:
         emit('xinput_status', {'available': False})
         return
+    _xinput_start_worker_once()
     pad = _xinput_ensure_for_sid(sid)
     if pad is None:
         emit('xinput_status', {'available': False})
@@ -938,7 +1042,8 @@ def handle_xinput_disconnect(data=None):
                 xinput_pad.update()
         except Exception:
             pass
-        xinput_pad = None
+        if xinput_state_queue:
+            xinput_state_queue.clear()
         xinput_owner_sid = None
         xinput_last_buttons = 0
 
@@ -946,10 +1051,17 @@ def handle_xinput_disconnect(data=None):
 @socketio.on('xinput_state')
 def handle_xinput_state(data):
     sid = request.sid
-    pad = _xinput_ensure_for_sid(sid)
-    if pad is None:
-        return
-    _xinput_apply_state(pad, data or {})
+    global xinput_state_count, xinput_state_last_log
+    _xinput_start_worker_once()
+    xinput_state_count += 1
+    now = time.time()
+    if now - xinput_state_last_log >= 1.0:
+        print(f"[手柄] xinput_state 收包速率: {xinput_state_count}/s, owner={xinput_owner_sid == sid}")
+        xinput_state_last_log = now
+        xinput_state_count = 0
+    with xinput_lock:
+        xinput_state_queue.append((sid, data or {}))
+    xinput_state_event.set()
 
 @socketio.on('gamepad_input')
 def handle_gamepad(data):
@@ -1040,10 +1152,12 @@ def handle_set_webrtc_scale(data):
 @socketio.on('set_capture_mode')
 def handle_set_capture_mode(data):
     """切换屏幕捕获模式 (dxgi/mss)"""
-    global dxgi_capture_enabled
+    global dxgi_capture_enabled, dxgi_failure_count, dxgi_retry_after
     mode = data.get('mode', 'auto')
 
     if mode == 'dxgi':
+        dxgi_retry_after = 0.0
+        dxgi_failure_count = 0
         dxgi_capture_enabled = init_dxgi_camera()
         if dxgi_capture_enabled:
             emit('capture_mode_updated', {'mode': 'dxgi', 'status': 'ok'})
