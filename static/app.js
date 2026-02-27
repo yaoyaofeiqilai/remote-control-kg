@@ -52,6 +52,7 @@ const state = {
         lastTs: 0,
         timer: null,
     },
+    keyboardVisible: false,
     videoFps: 0,
     videoFrameCount: 0,
     lastVideoFpsUpdate: Date.now(),
@@ -1223,20 +1224,17 @@ function initModeSwitching() {
     const modeBtns = document.querySelectorAll('.mode-btn');
     const touchOverlay = document.getElementById('touch-overlay');
     const gamepadControls = document.getElementById('gamepad-controls');
-    const keyboardControls = document.getElementById('keyboard-controls');
     const modeIndicator = document.getElementById('mode-indicator');
     const modeDescription = document.getElementById('mode-description');
 
     const modeNames = {
         'touch': '触控模式',
-        'gamepad': '游戏模式',
-        'keyboard': '键盘模式'
+        'gamepad': '游戏模式'
     };
 
     const modeDescs = {
         'touch': '触控板模式：单指移动=光标，单指点击=左键，双击并按住=拖拽，双指点击=右键，双指滑动=滚轮',
-        'gamepad': '左摇杆=WASD，右侧滑动=视角，右侧按钮=技能/普攻，Alt=长按切换',
-        'keyboard': '虚拟键盘输入，支持组合键'
+        'gamepad': '左摇杆=WASD，右侧滑动=视角，右侧按钮=技能/普攻，Alt=长按切换'
     };
 
     modeBtns.forEach(btn => {
@@ -1280,17 +1278,10 @@ function initModeSwitching() {
                 case 'touch':
                     touchOverlay.style.display = 'block';
                     gamepadControls.classList.add('hidden');
-                    keyboardControls.classList.add('hidden');
                     break;
                 case 'gamepad':
                     touchOverlay.style.display = 'block';
                     gamepadControls.classList.remove('hidden');
-                    keyboardControls.classList.add('hidden');
-                    break;
-                case 'keyboard':
-                    touchOverlay.style.display = 'none';
-                    gamepadControls.classList.add('hidden');
-                    keyboardControls.classList.remove('hidden');
                     break;
             }
         });
@@ -1328,6 +1319,26 @@ function initSettings() {
         sensitivityValue.textContent = value + 'x';
         CONFIG.mouseSensitivity = parseFloat(value);
     });
+
+    const keyboardToggle = document.getElementById('keyboard-toggle');
+    const keyboardToggleText = document.getElementById('keyboard-toggle-text');
+    const keyboardControls = document.getElementById('keyboard-controls');
+    if (keyboardToggle && keyboardToggleText && keyboardControls) {
+        const applyKeyboardVisible = (visible) => {
+            state.keyboardVisible = !!visible;
+            keyboardToggle.checked = state.keyboardVisible;
+            keyboardToggleText.textContent = state.keyboardVisible ? '开启' : '关闭';
+            if (state.keyboardVisible) {
+                keyboardControls.classList.remove('hidden');
+            } else {
+                keyboardControls.classList.add('hidden');
+            }
+        };
+        applyKeyboardVisible(false);
+        keyboardToggle.addEventListener('change', () => {
+            applyKeyboardVisible(keyboardToggle.checked);
+        });
+    }
 
     // 低延迟模式
     const lowLatencyCheckbox = document.getElementById('low-latency-mode');
@@ -1468,10 +1479,6 @@ function updateCursorDotVisibility() {
         // 非游戏模式，移除游戏模式样式
         virtualCursor.classList.remove('game-mode-cursor');
         // 触控模式下由 updateVirtualCursorDisplay 控制显示
-        // 键盘模式下保持隐藏
-        if (state.currentMode === 'keyboard') {
-            virtualCursor.classList.add('hidden');
-        }
     }
 }
 
