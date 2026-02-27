@@ -62,6 +62,18 @@ except Exception as e:
     print(f"[输入] 底层 SendInput API 加载失败: {e}")
     INPUT_SENDER_AVAILABLE = False
 
+XINPUT_AVAILABLE = False
+vg = None
+XUSB_BUTTON = None
+try:
+    if os.name == 'nt':
+        import vgamepad as _vg
+        vg = _vg
+        XUSB_BUTTON = vg.XUSB_BUTTON
+        XINPUT_AVAILABLE = True
+except Exception as e:
+    print(f"[手柄] vgamepad 未启用: {e}")
+
 WEBRTC_AVAILABLE = False
 try:
     from aiortc import RTCPeerConnection, RTCSessionDescription
@@ -106,6 +118,11 @@ game_mode = False  # 游戏模式：使用底层 SendInput，禁用鼠标同步
 input_sender = None
 if INPUT_SENDER_AVAILABLE:
     input_sender = get_input_sender()
+
+xinput_lock = threading.Lock()
+xinput_pad = None
+xinput_owner_sid = None
+xinput_last_buttons = 0
 
 def is_running_as_admin():
     try:
@@ -449,6 +466,7 @@ def handle_connect():
         'screen_width': pyautogui.size().width,
         'screen_height': pyautogui.size().height
     })
+    emit('xinput_status', {'available': bool(XINPUT_AVAILABLE)})
 
 
 @socketio.on('disconnect')
@@ -459,6 +477,18 @@ def handle_disconnect():
     print(f"[-] 客户端断开，当前连接数: {connected_clients}")
 
     sid = request.sid
+    global xinput_pad, xinput_owner_sid, xinput_last_buttons
+    if sid == xinput_owner_sid:
+        with xinput_lock:
+            try:
+                if xinput_pad is not None:
+                    xinput_pad.reset()
+                    xinput_pad.update()
+            except Exception:
+                pass
+            xinput_pad = None
+            xinput_owner_sid = None
+            xinput_last_buttons = 0
     if WEBRTC_AVAILABLE and sid in webrtc_peers and webrtc_loop is not None:
         asyncio.run_coroutine_threadsafe(_webrtc_close_peer(sid), webrtc_loop)
 
@@ -773,6 +803,153 @@ def send_key(key, down):
             pyautogui.keyDown(key)
         else:
             pyautogui.keyUp(key)
+
+
+def _xinput_clamp_i16(v):
+    try:
+        x = int(v)
+    except Exception:
+        x = 0
+    return max(-32768, min(32767, x))
+
+
+def _xinput_clamp_u8(v):
+    try:
+        x = int(v)
+    except Exception:
+        x = 0
+    return max(0, min(255, x))
+
+
+_XINPUT_BUTTON_MAP = {
+    0x0001: lambda: XUSB_BUTTON.XUSB_GAMEPAD_DPAD_UP,
+    0x0002: lambda: XUSB_BUTTON.XUSB_GAMEPAD_DPAD_DOWN,
+    0x0004: lambda: XUSB_BUTTON.XUSB_GAMEPAD_DPAD_LEFT,
+    0x0008: lambda: XUSB_BUTTON.XUSB_GAMEPAD_DPAD_RIGHT,
+    0x0010: lambda: XUSB_BUTTON.XUSB_GAMEPAD_START,
+    0x0020: lambda: XUSB_BUTTON.XUSB_GAMEPAD_BACK,
+    0x0040: lambda: XUSB_BUTTON.XUSB_GAMEPAD_LEFT_THUMB,
+    0x0080: lambda: XUSB_BUTTON.XUSB_GAMEPAD_RIGHT_THUMB,
+    0x0100: lambda: XUSB_BUTTON.XUSB_GAMEPAD_LEFT_SHOULDER,
+    0x0200: lambda: XUSB_BUTTON.XUSB_GAMEPAD_RIGHT_SHOULDER,
+    0x0400: lambda: XUSB_BUTTON.XUSB_GAMEPAD_GUIDE,
+    0x1000: lambda: XUSB_BUTTON.XUSB_GAMEPAD_A,
+    0x2000: lambda: XUSB_BUTTON.XUSB_GAMEPAD_B,
+    0x4000: lambda: XUSB_BUTTON.XUSB_GAMEPAD_X,
+    0x8000: lambda: XUSB_BUTTON.XUSB_GAMEPAD_Y,
+}
+
+
+def _xinput_ensure_for_sid(sid):
+    global xinput_pad, xinput_owner_sid, xinput_last_buttons
+    if not XINPUT_AVAILABLE or vg is None or XUSB_BUTTON is None:
+        return None
+    with xinput_lock:
+        if xinput_pad is None or xinput_owner_sid != sid:
+            try:
+                if xinput_pad is not None:
+                    xinput_pad.reset()
+                    xinput_pad.update()
+            except Exception:
+                pass
+            xinput_pad = vg.VX360Gamepad()
+            xinput_owner_sid = sid
+            xinput_last_buttons = 0
+            try:
+                xinput_pad.reset()
+                xinput_pad.update()
+            except Exception:
+                pass
+        return xinput_pad
+
+
+def _xinput_apply_state(pad, payload):
+    global xinput_last_buttons
+
+    lx = _xinput_clamp_i16(payload.get('lx', 0))
+    ly = _xinput_clamp_i16(payload.get('ly', 0))
+    rx = _xinput_clamp_i16(payload.get('rx', 0))
+    ry = _xinput_clamp_i16(payload.get('ry', 0))
+    lt = _xinput_clamp_u8(payload.get('lt', 0))
+    rt = _xinput_clamp_u8(payload.get('rt', 0))
+    buttons = payload.get('buttons', 0)
+    try:
+        buttons = int(buttons)
+    except Exception:
+        buttons = 0
+
+    try:
+        pad.left_joystick(x_value=lx, y_value=ly)
+        pad.right_joystick(x_value=rx, y_value=ry)
+        pad.left_trigger(value=lt)
+        pad.right_trigger(value=rt)
+    except Exception:
+        pass
+
+    prev = xinput_last_buttons
+    for bit, btn_factory in _XINPUT_BUTTON_MAP.items():
+        try:
+            btn = btn_factory()
+        except Exception:
+            continue
+        was = (prev & bit) != 0
+        now = (buttons & bit) != 0
+        if now and not was:
+            try:
+                pad.press_button(button=btn)
+            except Exception:
+                pass
+        elif was and not now:
+            try:
+                pad.release_button(button=btn)
+            except Exception:
+                pass
+
+    xinput_last_buttons = buttons
+    try:
+        pad.update()
+    except Exception:
+        pass
+
+
+@socketio.on('xinput_connect')
+def handle_xinput_connect(data):
+    sid = request.sid
+    if not XINPUT_AVAILABLE:
+        emit('xinput_status', {'available': False})
+        return
+    pad = _xinput_ensure_for_sid(sid)
+    if pad is None:
+        emit('xinput_status', {'available': False})
+        return
+    emit('xinput_status', {'available': True})
+
+
+@socketio.on('xinput_disconnect')
+def handle_xinput_disconnect(data=None):
+    sid = request.sid
+    global xinput_pad, xinput_owner_sid, xinput_last_buttons
+    with xinput_lock:
+        if xinput_owner_sid != sid:
+            return
+        try:
+            if xinput_pad is not None:
+                xinput_pad.reset()
+                xinput_pad.update()
+        except Exception:
+            pass
+        xinput_pad = None
+        xinput_owner_sid = None
+        xinput_last_buttons = 0
+
+
+@socketio.on('xinput_state')
+def handle_xinput_state(data):
+    sid = request.sid
+    pad = _xinput_ensure_for_sid(sid)
+    if pad is None:
+        return
+    _xinput_apply_state(pad, data or {})
 
 @socketio.on('gamepad_input')
 def handle_gamepad(data):

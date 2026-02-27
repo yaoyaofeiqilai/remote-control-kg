@@ -52,6 +52,15 @@ const state = {
         lastTs: 0,
         timer: null,
     },
+    physicalGamepad: {
+        active: false,
+        index: null,
+        enabled: false,
+        connected: false,
+        polling: false,
+        lastSentAt: 0,
+        lastPayloadKey: '',
+    },
     keyboardVisible: false,
     videoFps: 0,
     videoFrameCount: 0,
@@ -341,6 +350,11 @@ function stopMouseSync() {
 function updateVirtualCursorDisplay() {
     const virtualCursor = document.getElementById('virtual-cursor');
     if (!virtualCursor || !state.virtualMouse) return;
+
+    if (state.currentMode === 'controller') {
+        virtualCursor.classList.add('hidden');
+        return;
+    }
 
     // 游戏模式下根据设置决定是否显示红点
     if (state.currentMode === 'gamepad' && !isGamepadPointerActive() && !CONFIG.gameMode.showCursorDot) {
@@ -1085,6 +1099,161 @@ function initGamepadMode() {
     });
 }
 
+function initPhysicalGamepadForwarding() {
+    if (typeof navigator === 'undefined' || typeof navigator.getGamepads !== 'function') return;
+
+    const toI16 = (v) => {
+        const x = Math.max(-1, Math.min(1, v || 0));
+        return Math.max(-32768, Math.min(32767, Math.round(x * 32767)));
+    };
+
+    const applyDeadzone = (v, dz = 0.08) => {
+        const x = v || 0;
+        return Math.abs(x) < dz ? 0 : x;
+    };
+
+    const getActivePad = () => {
+        const pads = navigator.getGamepads();
+        if (!pads) return null;
+        if (state.physicalGamepad.index !== null && pads[state.physicalGamepad.index]) {
+            return pads[state.physicalGamepad.index];
+        }
+        for (const p of pads) {
+            if (p) return p;
+        }
+        return null;
+    };
+
+    const sendNeutral = () => {
+        if (!state.connected) return;
+        emit('xinput_state', { lx: 0, ly: 0, rx: 0, ry: 0, lt: 0, rt: 0, buttons: 0 });
+        state.physicalGamepad.lastPayloadKey = '0,0,0,0,0,0,0';
+    };
+
+    const connectIfPossible = (gp) => {
+        if (!state.connected || !state.physicalGamepad.enabled) return;
+        if (!gp) gp = getActivePad();
+        if (!gp) return;
+
+        state.physicalGamepad.active = true;
+        state.physicalGamepad.connected = true;
+        state.physicalGamepad.index = gp.index;
+        state.physicalGamepad.lastSentAt = 0;
+        state.physicalGamepad.lastPayloadKey = '';
+        emit('xinput_connect', { connected: true, id: gp.id || '' });
+        sendNeutral();
+    };
+
+    const disconnectNow = () => {
+        if (state.physicalGamepad.connected) {
+            sendNeutral();
+            emit('xinput_disconnect', {});
+        }
+        state.physicalGamepad.active = false;
+        state.physicalGamepad.connected = false;
+        state.physicalGamepad.index = null;
+        state.physicalGamepad.lastSentAt = 0;
+        state.physicalGamepad.lastPayloadKey = '';
+    };
+
+    const poll = (now) => {
+        if (!state.physicalGamepad.enabled) {
+            state.physicalGamepad.polling = false;
+            return;
+        }
+        requestAnimationFrame(poll);
+
+        if (!state.connected || document.hidden) return;
+
+        const gp = getActivePad();
+        if (!gp) {
+            if (state.physicalGamepad.connected) disconnectNow();
+            return;
+        }
+        if (!state.physicalGamepad.connected) {
+            connectIfPossible(gp);
+            if (!state.physicalGamepad.connected) return;
+        }
+
+        const axes = gp.axes || [];
+        const buttons = gp.buttons || [];
+
+        const lx = toI16(applyDeadzone(axes[0]));
+        const ly = toI16(applyDeadzone(-(axes[1] || 0)));
+        const rx = toI16(applyDeadzone(axes[2] || 0));
+        const ry = toI16(applyDeadzone(-(axes[3] || 0)));
+
+        const lt = Math.max(0, Math.min(255, Math.round(((buttons[6] && buttons[6].value) || 0) * 255)));
+        const rt = Math.max(0, Math.min(255, Math.round(((buttons[7] && buttons[7].value) || 0) * 255)));
+
+        const pressed = (idx) => !!(buttons[idx] && buttons[idx].pressed);
+
+        let mask = 0;
+        if (pressed(12)) mask |= 0x0001;
+        if (pressed(13)) mask |= 0x0002;
+        if (pressed(14)) mask |= 0x0004;
+        if (pressed(15)) mask |= 0x0008;
+        if (pressed(9)) mask |= 0x0010;
+        if (pressed(8)) mask |= 0x0020;
+        if (pressed(10)) mask |= 0x0040;
+        if (pressed(11)) mask |= 0x0080;
+        if (pressed(4)) mask |= 0x0100;
+        if (pressed(5)) mask |= 0x0200;
+        if (pressed(16)) mask |= 0x0400;
+        if (pressed(0)) mask |= 0x1000;
+        if (pressed(1)) mask |= 0x2000;
+        if (pressed(2)) mask |= 0x4000;
+        if (pressed(3)) mask |= 0x8000;
+
+        const key = `${lx},${ly},${rx},${ry},${lt},${rt},${mask}`;
+        if (key === state.physicalGamepad.lastPayloadKey) return;
+
+        const lastAt = state.physicalGamepad.lastSentAt || 0;
+        if (now - lastAt < 16) return;
+
+        state.physicalGamepad.lastSentAt = now;
+        state.physicalGamepad.lastPayloadKey = key;
+        emit('xinput_state', { lx, ly, rx, ry, lt, rt, buttons: mask });
+    };
+
+    state.physicalGamepad.setEnabled = (enabled) => {
+        const on = !!enabled;
+        if (state.physicalGamepad.enabled === on) return;
+        state.physicalGamepad.enabled = on;
+        if (!on) {
+            disconnectNow();
+            return;
+        }
+        connectIfPossible();
+        if (!state.physicalGamepad.polling) {
+            state.physicalGamepad.polling = true;
+            requestAnimationFrame(poll);
+        }
+    };
+
+    window.addEventListener('gamepadconnected', (e) => {
+        const gp = e.gamepad;
+        state.physicalGamepad.index = gp ? gp.index : state.physicalGamepad.index;
+        if (state.physicalGamepad.enabled) {
+            connectIfPossible(gp);
+        }
+    });
+
+    window.addEventListener('gamepaddisconnected', (e) => {
+        if (state.physicalGamepad.index === (e.gamepad && e.gamepad.index)) {
+            disconnectNow();
+        }
+    });
+
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) sendNeutral();
+    });
+
+    window.addEventListener('beforeunload', () => {
+        disconnectNow();
+    });
+}
+
 function releaseGamepadToggles() {
     if (state.gamepadAltLocked) {
         emit('key_event', { key: 'Alt', action: 'up' });
@@ -1247,12 +1416,14 @@ function initModeSwitching() {
 
     const modeNames = {
         'touch': '触控模式',
-        'gamepad': '游戏模式'
+        'gamepad': '游戏模式',
+        'controller': '手柄模式'
     };
 
     const modeDescs = {
         'touch': '触控板模式：单指移动=光标，单指点击=左键，双击并按住=拖拽，双指点击=右键，双指滑动=滚轮',
-        'gamepad': '左摇杆=WASD，右侧滑动=视角，右侧按钮=技能/普攻，Alt=长按切换'
+        'gamepad': '左摇杆=WASD，右侧滑动=视角，右侧按钮=技能/普攻，Alt=长按切换',
+        'controller': '使用蓝牙手柄直通电脑端（虚拟 Xbox 手柄），游戏会自动切换原生手柄 UI'
     };
 
     modeBtns.forEach(btn => {
@@ -1291,6 +1462,10 @@ function initModeSwitching() {
             // 更新鼠标红点显示状态
             updateCursorDotVisibility();
 
+            if (state.physicalGamepad && typeof state.physicalGamepad.setEnabled === 'function') {
+                state.physicalGamepad.setEnabled(mode === 'controller');
+            }
+
             // 切换显示
             switch (mode) {
                 case 'touch':
@@ -1302,6 +1477,11 @@ function initModeSwitching() {
                     touchOverlay.style.display = 'block';
                     gamepadControls.classList.remove('hidden');
                     if (globalSettings) globalSettings.classList.add('hidden');
+                    break;
+                case 'controller':
+                    touchOverlay.style.display = 'block';
+                    gamepadControls.classList.add('hidden');
+                    if (globalSettings) globalSettings.classList.remove('hidden');
                     break;
             }
         });
@@ -1540,6 +1720,12 @@ function updateCursorDotVisibility() {
     const virtualCursor = document.getElementById('virtual-cursor');
     if (!virtualCursor) return;
 
+    if (state.currentMode === 'controller') {
+        virtualCursor.classList.add('hidden');
+        virtualCursor.classList.remove('game-mode-cursor');
+        return;
+    }
+
     // 游戏模式下根据设置决定是否显示红点
     if (state.currentMode === 'gamepad') {
         virtualCursor.classList.remove('game-mode-cursor');
@@ -1563,6 +1749,7 @@ function init() {
     initSocket();
     initTouchMode();
     initGamepadMode();
+    initPhysicalGamepadForwarding();
     initKeyboardMode();
     initModeSwitching();
     initSettings();
