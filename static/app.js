@@ -5,16 +5,16 @@
 
 // ============ 全局配置 ============
 const CONFIG = {
-    mouseSensitivity: 1.5,
+    mouseSensitivity: 3.0,
     deadzone: 0.2,
     maxStickDistance: 90,
     lowLatencyMode: true,  // 低延迟模式
     touchThrottleMs: 8,    // 触摸节流(约120Hz)
     // 游戏模式专用配置
     gameMode: {
-        cameraSensitivity: 30,   // 视角灵敏度 (降低后的默认值)
+        cameraSensitivity: 100,
         pinchSensitivity: 0.25,  // 双指缩放灵敏度（deltaDist -> 滚轮 dy）
-        webrtcScale: 0.5,
+        webrtcScale: 1.0,
         showCursorDot: true,      // 是否显示鼠标红点
     }
 };
@@ -275,6 +275,19 @@ function initSocket() {
 
         // 开始同步鼠标位置
         startMouseSync();
+
+        const qualitySlider = document.getElementById('quality-slider');
+        if (qualitySlider) {
+            emit('set_quality', { quality: parseInt(qualitySlider.value) });
+        }
+        const fpsSlider = document.getElementById('fps-slider');
+        if (fpsSlider) {
+            emit('set_fps', { fps: parseInt(fpsSlider.value) });
+        }
+        const webrtcScaleSlider = document.getElementById('webrtc-scale-slider');
+        if (webrtcScaleSlider) {
+            emit('set_webrtc_scale', { scale: parseFloat(webrtcScaleSlider.value) });
+        }
 
         startVideoTransport();
     });
@@ -576,20 +589,24 @@ function initTouchMode() {
                 const sens = CONFIG.mouseSensitivity || 1.5;
                 const dx = deltaX * sens;
                 const dy = deltaY * sens;
-                if (Math.abs(dx) > 0.2 || Math.abs(dy) > 0.2) {
+                const rdx = Math.round(dx);
+                const rdy = Math.round(dy);
+                if (rdx !== 0 || rdy !== 0) {
                     state.virtualMouse.x += dx;
                     state.virtualMouse.y += dy;
                     state.virtualMouse.x = Math.max(0, Math.min(state.virtualMouse.x, state.screenWidth));
                     state.virtualMouse.y = Math.max(0, Math.min(state.virtualMouse.y, state.screenHeight));
                     updateVirtualCursorDisplay();
-                    emit('mouse_move_relative', { dx: dx, dy: dy, raw: false });
+                    emit('mouse_move_relative', { dx: rdx, dy: rdy, raw: false });
                 }
             } else {
-                const scale = CONFIG.gameMode.cameraSensitivity / 30;
+                const scale = (CONFIG.gameMode.cameraSensitivity / 30) * 3;
                 const dx = deltaX * scale;
                 const dy = deltaY * scale;
-                if (Math.abs(dx) > 0.2 || Math.abs(dy) > 0.2) {
-                    emit('mouse_move_relative', { dx: dx, dy: dy, raw: true });
+                const rdx = Math.round(dx);
+                const rdy = Math.round(dy);
+                if (rdx !== 0 || rdy !== 0) {
+                    emit('mouse_move_relative', { dx: rdx, dy: rdy, raw: true });
                 }
             }
         }
@@ -1226,6 +1243,7 @@ function initModeSwitching() {
     const gamepadControls = document.getElementById('gamepad-controls');
     const modeIndicator = document.getElementById('mode-indicator');
     const modeDescription = document.getElementById('mode-description');
+    const globalSettings = document.getElementById('global-settings');
 
     const modeNames = {
         'touch': '触控模式',
@@ -1278,10 +1296,12 @@ function initModeSwitching() {
                 case 'touch':
                     touchOverlay.style.display = 'block';
                     gamepadControls.classList.add('hidden');
+                    if (globalSettings) globalSettings.classList.remove('hidden');
                     break;
                 case 'gamepad':
                     touchOverlay.style.display = 'block';
                     gamepadControls.classList.remove('hidden');
+                    if (globalSettings) globalSettings.classList.add('hidden');
                     break;
             }
         });
@@ -1298,6 +1318,7 @@ function initSettings() {
     // 画质滑块
     const qualitySlider = document.getElementById('quality-slider');
     const qualityValue = document.getElementById('quality-value');
+    qualityValue.textContent = qualitySlider.value;
     qualitySlider.addEventListener('input', () => {
         qualityValue.textContent = qualitySlider.value;
         emit('set_quality', { quality: parseInt(qualitySlider.value) });
@@ -1306,6 +1327,7 @@ function initSettings() {
     // 帧率滑块
     const fpsSlider = document.getElementById('fps-slider');
     const fpsValue = document.getElementById('fps-value');
+    fpsValue.textContent = fpsSlider.value;
     fpsSlider.addEventListener('input', () => {
         fpsValue.textContent = fpsSlider.value;
         emit('set_fps', { fps: parseInt(fpsSlider.value) });
@@ -1314,29 +1336,32 @@ function initSettings() {
     // 灵敏度滑块
     const sensitivitySlider = document.getElementById('sensitivity-slider');
     const sensitivityValue = document.getElementById('sensitivity-value');
+    CONFIG.mouseSensitivity = parseFloat(sensitivitySlider.value);
+    sensitivityValue.textContent = sensitivitySlider.value + 'x';
     sensitivitySlider.addEventListener('input', () => {
         const value = sensitivitySlider.value;
         sensitivityValue.textContent = value + 'x';
         CONFIG.mouseSensitivity = parseFloat(value);
     });
 
-    const keyboardToggle = document.getElementById('keyboard-toggle');
-    const keyboardToggleText = document.getElementById('keyboard-toggle-text');
+    const keyboardToggleBtn = document.getElementById('keyboard-toggle-btn');
     const keyboardControls = document.getElementById('keyboard-controls');
-    if (keyboardToggle && keyboardToggleText && keyboardControls) {
+    if (keyboardToggleBtn && keyboardControls) {
         const applyKeyboardVisible = (visible) => {
             state.keyboardVisible = !!visible;
-            keyboardToggle.checked = state.keyboardVisible;
-            keyboardToggleText.textContent = state.keyboardVisible ? '开启' : '关闭';
             if (state.keyboardVisible) {
                 keyboardControls.classList.remove('hidden');
+                keyboardToggleBtn.textContent = '收起';
+                keyboardToggleBtn.classList.add('active');
             } else {
                 keyboardControls.classList.add('hidden');
+                keyboardToggleBtn.textContent = '唤出';
+                keyboardToggleBtn.classList.remove('active');
             }
         };
         applyKeyboardVisible(false);
-        keyboardToggle.addEventListener('change', () => {
-            applyKeyboardVisible(keyboardToggle.checked);
+        keyboardToggleBtn.addEventListener('click', () => {
+            applyKeyboardVisible(!state.keyboardVisible);
         });
     }
 
@@ -1416,6 +1441,8 @@ function initGameModeSettings() {
     const cameraSensitivitySlider = document.getElementById('camera-sensitivity-slider');
     const cameraSensitivityValue = document.getElementById('camera-sensitivity-value');
     if (cameraSensitivitySlider && cameraSensitivityValue) {
+        cameraSensitivityValue.textContent = cameraSensitivitySlider.value;
+        CONFIG.gameMode.cameraSensitivity = parseInt(cameraSensitivitySlider.value);
         cameraSensitivitySlider.addEventListener('input', () => {
             const value = parseInt(cameraSensitivitySlider.value);
             cameraSensitivityValue.textContent = value;
@@ -1438,6 +1465,8 @@ function initGameModeSettings() {
     const webrtcScaleSlider = document.getElementById('webrtc-scale-slider');
     const webrtcScaleValue = document.getElementById('webrtc-scale-value');
     if (webrtcScaleSlider && webrtcScaleValue) {
+        webrtcScaleValue.textContent = parseFloat(webrtcScaleSlider.value).toFixed(1) + 'x';
+        CONFIG.gameMode.webrtcScale = parseFloat(webrtcScaleSlider.value);
         webrtcScaleSlider.addEventListener('input', () => {
             const value = parseFloat(webrtcScaleSlider.value);
             webrtcScaleValue.textContent = value.toFixed(1) + 'x';
