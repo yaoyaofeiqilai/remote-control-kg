@@ -1314,6 +1314,7 @@ function initSettings() {
     const settingsPanel = document.getElementById('settings-panel');
     const closeSettings = document.getElementById('close-settings');
     const fullscreenBtn = document.getElementById('fullscreen-btn');
+    const fullscreenText = document.getElementById('fullscreen-text');
 
     // 画质滑块
     const qualitySlider = document.getElementById('quality-slider');
@@ -1345,24 +1346,41 @@ function initSettings() {
     });
 
     const keyboardToggleBtn = document.getElementById('keyboard-toggle-btn');
+    const keyboardToggleText = document.getElementById('keyboard-toggle-text');
     const keyboardControls = document.getElementById('keyboard-controls');
     if (keyboardToggleBtn && keyboardControls) {
         const applyKeyboardVisible = (visible) => {
             state.keyboardVisible = !!visible;
             if (state.keyboardVisible) {
                 keyboardControls.classList.remove('hidden');
-                keyboardToggleBtn.textContent = '收起';
-                keyboardToggleBtn.classList.add('active');
+                if (keyboardToggleBtn.tagName === 'INPUT') {
+                    keyboardToggleBtn.checked = true;
+                } else {
+                    keyboardToggleBtn.textContent = '收起';
+                    keyboardToggleBtn.classList.add('active');
+                }
+                if (keyboardToggleText) keyboardToggleText.textContent = '开启';
             } else {
                 keyboardControls.classList.add('hidden');
-                keyboardToggleBtn.textContent = '唤出';
-                keyboardToggleBtn.classList.remove('active');
+                if (keyboardToggleBtn.tagName === 'INPUT') {
+                    keyboardToggleBtn.checked = false;
+                } else {
+                    keyboardToggleBtn.textContent = '唤出';
+                    keyboardToggleBtn.classList.remove('active');
+                }
+                if (keyboardToggleText) keyboardToggleText.textContent = '关闭';
             }
         };
         applyKeyboardVisible(false);
-        keyboardToggleBtn.addEventListener('click', () => {
-            applyKeyboardVisible(!state.keyboardVisible);
-        });
+        if (keyboardToggleBtn.tagName === 'INPUT') {
+            keyboardToggleBtn.addEventListener('change', () => {
+                applyKeyboardVisible(keyboardToggleBtn.checked);
+            });
+        } else {
+            keyboardToggleBtn.addEventListener('click', () => {
+                applyKeyboardVisible(!state.keyboardVisible);
+            });
+        }
     }
 
     // 低延迟模式
@@ -1377,14 +1395,43 @@ function initSettings() {
     // 游戏模式专用设置
     initGameModeSettings();
 
-    // 全屏按钮
-    fullscreenBtn.addEventListener('click', () => {
-        if (!document.fullscreenElement) {
-            document.documentElement.requestFullscreen();
+    // 全屏
+    if (fullscreenBtn) {
+        const syncFullscreenUI = () => {
+            const active = !!document.fullscreenElement;
+            if (fullscreenBtn.tagName === 'INPUT') fullscreenBtn.checked = active;
+            if (fullscreenText) fullscreenText.textContent = active ? '开启' : '关闭';
+        };
+        syncFullscreenUI();
+        document.addEventListener('fullscreenchange', syncFullscreenUI);
+
+        if (fullscreenBtn.tagName === 'INPUT') {
+            fullscreenBtn.addEventListener('change', async () => {
+                try {
+                    if (fullscreenBtn.checked) {
+                        await document.documentElement.requestFullscreen();
+                    } else {
+                        await document.exitFullscreen();
+                    }
+                } catch (e) {
+                    syncFullscreenUI();
+                }
+            });
         } else {
-            document.exitFullscreen();
+            fullscreenBtn.addEventListener('click', async () => {
+                try {
+                    if (!document.fullscreenElement) {
+                        await document.documentElement.requestFullscreen();
+                    } else {
+                        await document.exitFullscreen();
+                    }
+                } catch (e) {
+                } finally {
+                    syncFullscreenUI();
+                }
+            });
         }
-    });
+    }
 
     // 打开/关闭设置
     settingsBtn.addEventListener('click', () => {

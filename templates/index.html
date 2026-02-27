@@ -155,7 +155,10 @@
         <!-- 设置面板 -->
         <div id="settings-panel" class="hidden">
             <div class="settings-content">
-                <h3>⚙️ 设置</h3>
+                <div class="settings-header">
+                    <h3>设置</h3>
+                    <button id="close-settings" class="settings-close" title="关闭">×</button>
+                </div>
 
                 <!-- 模式切换 - 移入设置 -->
                 <div class="setting-section">
@@ -170,6 +173,28 @@
                 </div>
 
                 <div id="global-settings">
+                    <div class="setting-section">
+                        <label>工具</label>
+
+                        <div class="setting-item">
+                            <label>键盘</label>
+                            <input type="checkbox" id="keyboard-toggle-btn">
+                            <span id="keyboard-toggle-text">关闭</span>
+                        </div>
+
+                        <div class="setting-item">
+                            <label>全屏显示</label>
+                            <input type="checkbox" id="fullscreen-btn">
+                            <span id="fullscreen-text">关闭</span>
+                        </div>
+
+                        <div class="setting-item">
+                            <label>低延迟</label>
+                            <input type="checkbox" id="low-latency-mode" checked>
+                            <span>启用</span>
+                        </div>
+                    </div>
+
                     <div class="setting-section">
                         <label>画面</label>
 
@@ -195,24 +220,6 @@
                             <label>鼠标灵敏</label>
                             <input type="range" id="sensitivity-slider" min="0.5" max="6" step="0.1" value="3.0">
                             <span id="sensitivity-value">3.0x</span>
-                        </div>
-                    </div>
-
-                    <div class="setting-section">
-                        <label>工具</label>
-
-                        <div class="setting-item">
-                            <label>虚拟键盘</label>
-                            <div class="setting-actions">
-                                <button id="keyboard-toggle-btn" class="setting-btn">唤出</button>
-                                <button id="fullscreen-btn" class="setting-btn">全屏</button>
-                            </div>
-                        </div>
-
-                        <div class="setting-item">
-                            <label>低延迟</label>
-                            <input type="checkbox" id="low-latency-mode" checked>
-                            <span>启用</span>
                         </div>
                     </div>
                 </div>
@@ -241,8 +248,6 @@
                         </div>
                     </div>
                 </div>
-
-                <button id="close-settings" class="close-btn">关闭</button>
             </div>
         </div>
     </div>
