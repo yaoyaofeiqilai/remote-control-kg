@@ -1,230 +1,67 @@
-# 🎮 远程控制软件
+# Remote Control (Windows Host)
 
-一个类似 ToDesk 的局域网远程控制软件，专为 **小米平板控制 Windows 电脑玩游戏** 设计。
+A LAN remote-control server for controlling a Windows PC from a tablet/phone browser.
 
-## ✨ 功能特点
+## Current Architecture
 
-- **三种控制模式**：
-  - 🖱️ **触控模式**：对标笔记本触控板，单指移动/点击，双击按住拖动，双指右键/滚轮
-  - 🎮 **游戏模式**：虚拟手柄，支持 WASD 移动 + 动作按钮
-  - ⌨️ **键盘模式**：虚拟键盘，支持快捷键
+- `server.py`: backward-compatible launcher (kept for old workflows).
+- `src/remote_control/server_app.py`: main backend runtime (Flask + Socket.IO + capture/input pipeline).
+- `src/remote_control/input_sender.py`: low-level Windows `SendInput` wrapper.
+- `static/` + `templates/`: web client UI.
+- `tools/diagnostics/`: optional diagnostic scripts and test assets.
 
-- **针对游戏优化**：
-  - 虚拟摇杆支持 WASD 移动
-  - A/B/X/Y 按钮（跳跃/返回/交互/技能）
-  - Tab、Esc、Shift、Ctrl 快捷按钮
-  - 可调节鼠标灵敏度
+## Quick Start
 
-- **视频传输**：
-  - 实时屏幕捕获
-  - 可调节画质 (10-95)
-  - 可调节帧率 (10-60 FPS)
-  - MJPEG 视频流
+1. Install dependencies once:
+   - Run `install.bat`
+2. Start server (admin is auto-handled):
+   - Run `start.bat`
+3. Open the URL shown in terminal on your tablet/phone browser.
 
-## 📋 系统要求
+## Startup Scripts
 
-- **电脑端**：Windows 10/11，Python 3.8+
-- **平板端**：任意支持浏览器的设备（小米平板、手机等）
-- **网络**：电脑和平板连接同一个 WiFi/热点
+- `start.bat`
+  - Auto-elevates to administrator if needed.
+  - Auto-detects Python 3.12.
+  - Checks/install dependencies when missing.
+  - Starts server with `--dxgi` by default.
+- `start_admin.bat`
+  - Compatibility wrapper that always starts admin flow.
 
-## 🚀 快速开始
+## One-Click GitHub Deploy
 
-### 第一步：安装（仅需一次）
+Use `deploy_github.bat`.
 
-1. 确保已安装 Python 3.8 或更高版本
-2. 双击运行 `install.bat`
-
-**⚠️ 安装失败？** 如果提示 Pillow 编译错误，请尝试以下方法之一：
-- **方法1**：使用预编译版本：
-  ```bash
-  python -m pip install Pillow==9.5.0 --only-binary :all:
-  python -m pip install -r requirements.txt
-  ```
-- **方法2**：安装 Visual Studio Build Tools（[下载](https://aka.ms/vs/17/release/vs_BuildTools.exe)）
-- **方法3**：运行 `install_manual.bat` 逐个安装
-
-详细解决方案请参考 [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
-
-### 第二步：启动服务端
-
-1. 双击运行 `start.bat`
-2. 等待显示类似以下的信息：
-   ```
-   本机IP: 192.168.137.1
-   端口: 5000
-   控制界面: http://192.168.137.1:5000
-   ```
-
-### 第三步：平板连接
-
-1. 确保平板和电脑连接 **同一个 WiFi 或热点**
-2. 在平板上打开浏览器（Chrome/Safari 推荐）
-3. 输入服务端显示的地址，如 `http://192.168.137.1:5000`
-4. 开始远程控制！
-
-## 🎮 使用说明
-
-1. **点击 ⚙️ 设置按钮**，选择控制模式：
-   - 触控模式、游戏模式、键盘模式
-
-### 触控模式（对标笔记本触控板）
-- **单指移动**：控制鼠标光标（不触发点击）
-- **单指点击**：左键单击
-- **双击并按住（第二次点击不释放）+ 移动**：按住左键拖动（可拖动窗口、选择文本等）
-- **双指点击**：右键单击
-- **双指上下/左右滑动**：滚轮滚动（四个方向）
-
-### 游戏模式
-- **左摇杆**：WASD 移动
-- **右摇杆**：控制视角/鼠标
-- **A 按钮**：空格（跳跃/确认）
-- **B 按钮**：Esc（返回/取消）
-- **X 按钮**：E（交互）
-- **Y 按钮**：R（换弹/技能）
-- **下方按钮**：Tab（背包）、Esc（菜单）、Shift（冲刺）、Ctrl（蹲下）
-
-### 键盘模式
-- 虚拟键盘，支持字母、数字、功能键
-- Shift、Ctrl、Alt 支持
-
-> 💡 **提示**：当前模式会显示在屏幕左上角的指示器中
-
-### 设置
-- 点击右上角 ⚙️ 悬浮按钮打开设置面板
-- **模式切换**：在设置中选择触控/游戏/键盘模式
-- **画质/帧率**：建议根据网络调整（推荐：画质50，帧率25）
-- **低延迟模式**：默认开启，提供更灵敏的触摸响应
-- **全屏显示**：隐藏所有UI元素，最大化屏幕显示
-
-## 🔧 高级配置
-
-### 修改默认端口
-编辑 `server.py`，修改第 188 行的端口号：
-```python
-port = 5000  # 修改为你想要的端口
+```bat
+deploy_github.bat https://github.com/<USER>/<REPO>.git "your commit message"
 ```
 
-### 防火墙设置
-如果无法连接，请检查 Windows 防火墙：
-1. 打开 Windows 安全中心 → 防火墙和网络保护
-2. 点击 "允许应用通过防火墙"
-3. 确保 Python 和端口 5000 被允许
+What it does:
+- Initializes git repo if needed.
+- Configures `origin` remote if URL provided.
+- Stages all changes.
+- Commits if there are staged changes.
+- Pushes current branch to `origin`.
 
-### 修改热点 IP 段
-如果使用 Windows 移动热点，默认 IP 通常是 `192.168.137.x`
-如果使用路由器 WiFi，IP 取决于路由器设置
+## Optional Diagnostics
 
-## 📝 文件结构
+- `tools/diagnostics/test_dxgi.py`
+- `tools/diagnostics/test_uac_capture.py`
+- `tools/diagnostics/test_uac_now.py`
+- `tools/diagnostics/uac_test_dpi.py`
 
-```
-remote-control/
-├── server.py              # 服务端主程序（支持 DXGI 捕获）
-├── requirements.txt       # Python 依赖
-├── install.bat            # 安装脚本
-├── install_manual.bat     # 手动安装脚本（备用）
-├── check_install.py       # 安装检查工具
-├── test_dxgi.py           # DXGI 捕获测试工具
-├── start.bat              # 启动脚本
-├── README.md              # 说明文档
-├── TROUBLESHOOTING.md     # 故障排除指南
-├── templates/
-│   └── index.html         # 控制界面
-└── static/
-    ├── style.css          # 界面样式
-    ├── app.js             # 控制逻辑
-    └── socket.io.min.js   # 通信库
+## Debug Logging
+
+Verbose debug output is disabled by default.
+
+Enable temporarily:
+
+```bat
+set RC_DEBUG=1
+start.bat
 ```
 
-## ⚠️ 注意事项
+## Notes
 
-1. **安全风险**：本软件仅建议在安全的局域网内使用，不要在公共网络开放
-2. **性能**：画质和帧率越高，对网络要求越高。建议局域网内使用 60 画质/30 FPS
-3. **防火墙**：首次运行可能需要允许 Windows 防火墙通过
-4. **分辨率**：平板和电脑分辨率差异较大时，鼠标映射可能需调整
-
-## 🐛 故障排除
-
-### 无法连接
-- 检查电脑和平板是否在同一网络
-- 检查 Windows 防火墙设置
-- 尝试在浏览器直接访问 `http://<电脑IP>:5000`
-
-### 画面卡顿
-- 降低画质设置（建议 40-60）
-- 降低帧率设置（建议 20-30）
-- 确保 WiFi 信号良好
-
-### 鼠标/按键无响应
-- 检查浏览器是否阻止了 JavaScript
-- 刷新页面重新连接
-- 确保服务端正常运行
-
-## 📄 许可证
-
-MIT License - 仅供学习和个人使用
-
-## 📝 更新日志
-
-### v1.3.0 - 触控板逻辑优化
-- **全新触控板逻辑**：完全对标笔记本电脑触控板
-  - 单指移动 = 鼠标移动（不触发点击）
-  - 单指点击 = 左键单击
-  - 双击并按住（第二次点击不释放）+ 移动 = 拖拽窗口/选择文本
-  - 双指点击 = 右键
-  - 双指滑动 = 滚轮（支持上下左右四个方向）
-  - 删除三指操作
-- **修复滚轮问题**：修复 pyautogui.scroll 参数错误导致滚轮失效
-
-### v1.2.0 - DXGI 屏幕捕获
-- **DXGI 硬件捕获**：新增 DXGI Desktop Duplication API 支持，管理员运行可捕获 UAC 弹窗
-- **自动回退**：DXGI 失败时自动回退到 mss 捕获
-- **捕获模式切换**：支持通过 WebSocket 切换 dxgi/mss 模式
-
-### v1.1.0 - 优化更新
-- **优化触摸延迟**：新增低延迟模式，触摸响应更灵敏
-- **UI 重构**：移除底部固定控制栏，改为悬浮设置按钮，全屏显示电脑桌面
-- **性能优化**：优化视频流传输，减少 CPU 占用
-
-## 🔴 UAC 弹窗显示问题
-
-**问题**：启动游戏时出现 UAC 权限请求弹窗，平板上显示黑屏无法操作。
-
-**原因**：Windows UAC 默认在"安全桌面"上显示，普通程序无法捕获。
-
-**解决方案**：使用 DXGI 硬件捕获（推荐）
-
-### 方法 1：DXGI Desktop Duplication API（推荐）
-
-服务端现在支持 DXGI 硬件加速捕获，**以管理员身份运行服务端**即可捕获 UAC 弹窗。
-
-**使用步骤**：
-1. 安装 dxcam 库：`python -m pip install dxcam==0.0.5`
-2. 以管理员身份运行服务端（右键 `start.bat` → 以管理员身份运行）
-3. 启动时会显示：`捕获模式: DXGI (硬件加速)`
-
-**测试 DXGI 是否正常工作**：
-```bash
-python test_dxgi.py
-```
-
-**特点**：
-- ✅ 无需修改 UAC 设置
-- ✅ 硬件加速，性能更好
-- ✅ 以管理员运行即可捕获 UAC
-- ⚠️ 需要 Windows 8+ 和 DirectX 11+ 显卡支持
-
-### 方法 2：临时关闭 UAC（备选）
-
-1. 搜索"UAC"或"更改用户账户控制设置"
-2. 将滑块拖到最底部"从不通知"
-3. 点击确定并重启
-
----
-
-## 🙏 致谢
-
-- Flask - Web 框架
-- Socket.IO - 实时通信
-- PyAutoGUI - 输入控制
-- mss - 屏幕捕获（软件）
-- dxcam - 屏幕捕获（DXGI 硬件加速）
+- Keep usage inside trusted LAN environments.
+- For UAC popup capture/control reliability, run as administrator.

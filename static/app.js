@@ -4,20 +4,16 @@
  */
 
 // ============ 全局配置 ============
-const CONFIG = {
-    mouseSensitivity: 3.0,
-    deadzone: 0.2,
-    maxStickDistance: 90,
-    lowLatencyMode: true,  // 低延迟模式
-    touchThrottleMs: 8,    // 触摸节流(约120Hz)
-    // 游戏模式专用配置
-    gameMode: {
-        cameraSensitivity: 100,
-        pinchSensitivity: 0.25,  // 双指缩放灵敏度（deltaDist -> 滚轮 dy）
-        webrtcScale: 1.0,
-        showCursorDot: true,      // 是否显示鼠标红点
+
+
+const DEBUG_LOG_ENABLED = false;
+
+function debugLog(...args) {
+    if (DEBUG_LOG_ENABLED) {
+        console.info(...args);
     }
-};
+}
+
 
 // ============ 状态管理 ============
 const state = {
@@ -255,7 +251,7 @@ function initSocket() {
     });
 
     state.socket.on('connect', () => {
-        console.log('[Socket] 已连接');
+        debugLog('[Socket] 已连接');
         state.connected = true;
         statusEl.textContent = '已连接';
         statusEl.className = 'connected';
@@ -267,7 +263,7 @@ function initSocket() {
     });
 
     state.socket.on('disconnect', () => {
-        console.log('[Socket] 已断开');
+        debugLog('[Socket] 已断开');
         state.connected = false;
         if (state.physicalGamepad) {
             state.physicalGamepad.serverAttached = false;
@@ -287,7 +283,7 @@ function initSocket() {
     state.socket.on('connected', (data) => {
         state.screenWidth = data.screen_width;
         state.screenHeight = data.screen_height;
-        console.log('[Socket] 屏幕尺寸:', state.screenWidth, 'x', state.screenHeight);
+        debugLog('[Socket] 屏幕尺寸:', state.screenWidth, 'x', state.screenHeight);
 
         // 初始化虚拟鼠标位置为屏幕中心
         if (!state.virtualMouse) {
@@ -323,7 +319,7 @@ function initSocket() {
             const dx = Math.abs(state.virtualMouse.x - data.x);
             const dy = Math.abs(state.virtualMouse.y - data.y);
             if (dx > 200 || dy > 200) {
-                console.log(`[警告] 触摸时位置偏差过大 (${dx.toFixed(0)}, ${dy.toFixed(0)})`);
+                debugLog(`[警告] 触摸时位置偏差过大 (${dx.toFixed(0)}, ${dy.toFixed(0)})`);
                 // 不立即校准，避免跳跃，但记录问题
             }
         } else {
@@ -724,7 +720,7 @@ function initTouchMode() {
 
         // 如果偏差超过阈值，进行校准（但只在非拖拽模式下）
         if ((dx > POS_SYNC_THRESHOLD || dy > POS_SYNC_THRESHOLD) && !touchState.isDragging) {
-            console.log(`[校准] 位置偏差过大 (${dx.toFixed(0)}, ${dy.toFixed(0)})，进行校准`);
+            debugLog(`[校准] 位置偏差过大 (${dx.toFixed(0)}, ${dy.toFixed(0)})，进行校准`);
             state.virtualMouse.x = serverX;
             state.virtualMouse.y = serverY;
             updateVirtualCursorDisplay();
@@ -814,7 +810,7 @@ function initTouchMode() {
                 // 发送 left down（开始拖拽）
                 emit('mouse_click', { button: 'left', action: 'down' });
                 playClickAnimation();
-                console.log('[触控] 进入拖拽模式');
+                debugLog('[触控] 进入拖拽模式');
             } else {
                 // 第一次点击，不立即执行，延迟等待确认是否是双击
                 touchState.isSecondTap = false;
@@ -1615,7 +1611,7 @@ function initSettings() {
     if (lowLatencyCheckbox) {
         lowLatencyCheckbox.addEventListener('change', () => {
             CONFIG.lowLatencyMode = lowLatencyCheckbox.checked;
-            console.log('[Config] 低延迟模式:', CONFIG.lowLatencyMode);
+            debugLog('[Config] 低延迟模式:', CONFIG.lowLatencyMode);
         });
     }
 
@@ -1721,7 +1717,7 @@ function initGameModeSettings() {
             const value = parseInt(cameraSensitivitySlider.value);
             cameraSensitivityValue.textContent = value;
             CONFIG.gameMode.cameraSensitivity = value;
-            console.log('[Config] 视角灵敏度:', value);
+            debugLog('[Config] 视角灵敏度:', value);
         });
     }
 
@@ -1732,7 +1728,7 @@ function initGameModeSettings() {
             const value = parseFloat(pinchSensitivitySlider.value);
             pinchSensitivityValue.textContent = value.toFixed(2).replace(/\.00$/, '');
             CONFIG.gameMode.pinchSensitivity = value;
-            console.log('[Config] 双指缩放灵敏度:', value);
+            debugLog('[Config] 双指缩放灵敏度:', value);
         });
     }
 
@@ -1757,7 +1753,7 @@ function initGameModeSettings() {
             CONFIG.gameMode.showCursorDot = showCursorDotCheckbox.checked;
             cursorDotStatus.textContent = showCursorDotCheckbox.checked ? '显示' : '隐藏';
             updateCursorDotVisibility();
-            console.log('[Config] 显示鼠标红点:', CONFIG.gameMode.showCursorDot);
+            debugLog('[Config] 显示鼠标红点:', CONFIG.gameMode.showCursorDot);
         });
     }
 }
@@ -2069,7 +2065,7 @@ function init() {
         lastTouchEnd = now;
     }, false);
 
-    console.log('[App] 初始化完成，低延迟模式:', CONFIG.lowLatencyMode);
+    debugLog('[App] 初始化完成，低延迟模式:', CONFIG.lowLatencyMode);
 }
 
 // 页面加载完成后初始化
