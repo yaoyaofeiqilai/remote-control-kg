@@ -47,10 +47,57 @@ VK_MAP = {
     'down': 0x28,
     'left': 0x25,
     'right': 0x27,
+    'home': 0x24,
+    'end': 0x23,
+    'pageup': 0x21,
+    'pagedown': 0x22,
+    'insert': 0x2D,
+    'capslock': 0x14,
+    'numlock': 0x90,
+    'scrolllock': 0x91,
+    'printscreen': 0x2C,
+    'pause': 0x13,
+    'contextmenu': 0x5D,
+    'apps': 0x5D,
     'ctrl': 0x11,
     'alt': 0x12,
     'shift': 0x10,
     'win': 0x5B,
+    # Number row shifted symbols
+    ')': 0x30,
+    '!': 0x31,
+    '@': 0x32,
+    '#': 0x33,
+    '$': 0x34,
+    '%': 0x35,
+    '^': 0x36,
+    '&': 0x37,
+    '*': 0x38,
+    '(': 0x39,
+    # OEM punctuation keys
+    ';': 0xBA,
+    ':': 0xBA,
+    '=': 0xBB,
+    '+': 0xBB,
+    ',': 0xBC,
+    '<': 0xBC,
+    '-': 0xBD,
+    '_': 0xBD,
+    '.': 0xBE,
+    '>': 0xBE,
+    '/': 0xBF,
+    '?': 0xBF,
+    '`': 0xC0,
+    '~': 0xC0,
+    '[': 0xDB,
+    '{': 0xDB,
+    '\\': 0xDC,
+    '|': 0xDC,
+    ']': 0xDD,
+    '}': 0xDD,
+    "'": 0xDE,
+    '"': 0xDE,
+    # Common alpha bindings used by game controls
     'w': 0x57,
     'a': 0x41,
     's': 0x53,
@@ -60,6 +107,22 @@ VK_MAP = {
     'q': 0x51,
     'f': 0x46,
 }
+
+for i in range(1, 25):
+    VK_MAP[f'f{i}'] = 0x6F + i
+
+
+def resolve_vk(key):
+    """Resolve key name to Windows virtual key code."""
+    if not key:
+        return '', 0
+    key_lower = key.lower()
+    vk = VK_MAP.get(key_lower, 0)
+    if vk:
+        return key_lower, vk
+    if len(key) == 1 and key.isascii() and key.isalnum():
+        return key_lower, ord(key.upper())
+    return key_lower, 0
 
 
 class MOUSEINPUT(ctypes.Structure):
@@ -297,8 +360,7 @@ class InputSender:
 
     def key_down(self, key):
         """按键按下"""
-        key_lower = key.lower()
-        vk = VK_MAP.get(key_lower, ord(key.upper()) if len(key) == 1 else 0)
+        key_lower, vk = resolve_vk(key)
         if vk:
             use_scancode = key_lower in ('shift', 'ctrl', 'alt')
             return send_keyboard_input(vk, 0, use_scancode=use_scancode)
@@ -306,8 +368,7 @@ class InputSender:
 
     def key_up(self, key):
         """按键抬起"""
-        key_lower = key.lower()
-        vk = VK_MAP.get(key_lower, ord(key.upper()) if len(key) == 1 else 0)
+        key_lower, vk = resolve_vk(key)
         if vk:
             use_scancode = key_lower in ('shift', 'ctrl', 'alt')
             return send_keyboard_input(vk, KEYEVENTF_KEYUP, use_scancode=use_scancode)

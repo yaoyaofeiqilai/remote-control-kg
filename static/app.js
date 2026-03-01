@@ -1473,6 +1473,207 @@ function initKeyboardMode() {
     }
 }
 
+function initHardwareKeyboardForwarding() {
+    const activeKeys = new Map(); // keyId -> remoteKey
+    const repeatTimers = new Map(); // keyId -> { startTimer, repeatTimer }
+    const comboConsumedKeyIds = new Set(); // keyId consumed by shortcut remap
+    const KEY_REPEAT_DELAY_MS = 320;
+    const KEY_REPEAT_INTERVAL_MS = 45;
+
+    function isEditableTarget(target) {
+        if (!target) return false;
+        const tag = target.tagName;
+        if (!tag) return false;
+        const upper = tag.toUpperCase();
+        return upper === 'INPUT' || upper === 'TEXTAREA' || !!target.isContentEditable;
+    }
+
+    function normalizePhysicalKey(e) {
+        const key = e.key;
+        if (!key || key === 'Unidentified' || key === 'Dead' || key === 'Process') return null;
+        if (key === ' ') return 'Space';
+        if (key === 'Spacebar') return 'Space';
+        if (key === 'Esc') return 'Escape';
+        if (key === 'OS' || key === 'Super') return 'Meta';
+        if (key === 'Left') return 'ArrowLeft';
+        if (key === 'Right') return 'ArrowRight';
+        if (key === 'Up') return 'ArrowUp';
+        if (key === 'Down') return 'ArrowDown';
+        if (key === 'ControlLeft' || key === 'ControlRight') return 'Control';
+        if (key === 'ShiftLeft' || key === 'ShiftRight') return 'Shift';
+        if (key === 'AltLeft' || key === 'AltRight') return 'Alt';
+        if (key === 'Del') return 'Delete';
+        return key;
+    }
+
+    function keyIdForEvent(e, normalizedKey) {
+        return (e.code && e.code.length > 0) ? e.code : `key:${normalizedKey || e.key || 'unknown'}`;
+    }
+
+    function sendKey(remoteKey, action) {
+        emit('key_event', { key: remoteKey, action: action });
+    }
+
+    function isModifierKey(remoteKey) {
+        return remoteKey === 'Control' || remoteKey === 'Shift' || remoteKey === 'Alt' || remoteKey === 'Meta';
+    }
+
+    function isRepeatableKey(remoteKey) {
+        if (!remoteKey) return false;
+        if (isModifierKey(remoteKey)) return false;
+        return remoteKey !== 'Escape';
+    }
+
+    function hasHeldControlKey() {
+        for (const remoteKey of activeKeys.values()) {
+            if (remoteKey === 'Control') return true;
+        }
+        return false;
+    }
+
+    function stopKeyRepeat(keyId) {
+        const timers = repeatTimers.get(keyId);
+        if (!timers) return;
+        if (timers.startTimer) clearTimeout(timers.startTimer);
+        if (timers.repeatTimer) clearInterval(timers.repeatTimer);
+        repeatTimers.delete(keyId);
+    }
+
+    function startKeyRepeat(keyId, remoteKey) {
+        if (!isRepeatableKey(remoteKey)) return;
+        stopKeyRepeat(keyId);
+        const startTimer = setTimeout(() => {
+            if (!activeKeys.has(keyId)) {
+                repeatTimers.delete(keyId);
+                return;
+            }
+            sendKey(remoteKey, 'down');
+            const repeatTimer = setInterval(() => {
+                if (!activeKeys.has(keyId)) {
+                    stopKeyRepeat(keyId);
+                    return;
+                }
+                sendKey(remoteKey, 'down');
+            }, KEY_REPEAT_INTERVAL_MS);
+            repeatTimers.set(keyId, { startTimer: null, repeatTimer: repeatTimer });
+        }, KEY_REPEAT_DELAY_MS);
+        repeatTimers.set(keyId, { startTimer: startTimer, repeatTimer: null });
+    }
+
+    function tapSystemKey(remoteKey) {
+        // 组合键替代时，避免被 Ctrl 修饰成 Ctrl+Esc / Ctrl+Win。
+        const hadControl = hasHeldControlKey();
+        if (hadControl) {
+            sendKey('Control', 'up');
+        }
+        sendKey(remoteKey, 'down');
+        setTimeout(() => {
+            sendKey(remoteKey, 'up');
+            if (hadControl && hasHeldControlKey()) {
+                sendKey('Control', 'down');
+            }
+        }, 35);
+    }
+
+    function isCtrlShortcutTrigger(e, normalizedKey, digit) {
+        if (e.altKey || e.metaKey) return false;
+        const code = e.code || '';
+        const byCode = code === `Digit${digit}`;
+        const byKey = normalizedKey === `${digit}`;
+        return (byCode || byKey) && (e.ctrlKey || hasHeldControlKey());
+    }
+
+    function releaseAllHardwareKeys() {
+        if (!state.connected) {
+            for (const keyId of repeatTimers.keys()) stopKeyRepeat(keyId);
+            activeKeys.clear();
+            comboConsumedKeyIds.clear();
+            return;
+        }
+        for (const keyId of repeatTimers.keys()) stopKeyRepeat(keyId);
+        for (const remoteKey of activeKeys.values()) {
+            sendKey(remoteKey, 'up');
+        }
+        activeKeys.clear();
+        comboConsumedKeyIds.clear();
+    }
+
+    document.addEventListener('keydown', (e) => {
+        if (!state.connected) return;
+        if (isEditableTarget(e.target)) return;
+
+        const normalizedKey = normalizePhysicalKey(e);
+        if (!normalizedKey) return;
+        const keyId = keyIdForEvent(e, normalizedKey);
+
+        // 替代系统键：
+        // Ctrl + 1 => Esc
+        // Ctrl + 2 => Win
+        if (isCtrlShortcutTrigger(e, normalizedKey, 1)) {
+            e.preventDefault();
+            if (!comboConsumedKeyIds.has(keyId)) {
+                comboConsumedKeyIds.add(keyId);
+                tapSystemKey('Escape');
+            }
+            return;
+        }
+
+        if (isCtrlShortcutTrigger(e, normalizedKey, 2)) {
+            e.preventDefault();
+            if (!comboConsumedKeyIds.has(keyId)) {
+                comboConsumedKeyIds.add(keyId);
+                tapSystemKey('Meta');
+            }
+            return;
+        }
+
+        e.preventDefault();
+        if (activeKeys.has(keyId)) {
+            const remoteKey = activeKeys.get(keyId);
+            if (e.repeat && isRepeatableKey(remoteKey)) {
+                // 浏览器自身已提供 repeat 时，停用本地 repeat 以免双倍触发。
+                stopKeyRepeat(keyId);
+                sendKey(remoteKey, 'down');
+            }
+            return;
+        }
+
+        activeKeys.set(keyId, normalizedKey);
+        sendKey(normalizedKey, 'down');
+        startKeyRepeat(keyId, normalizedKey);
+    }, { passive: false });
+
+    document.addEventListener('keyup', (e) => {
+        if (!state.connected) return;
+        if (isEditableTarget(e.target)) return;
+
+        const normalizedKey = normalizePhysicalKey(e);
+        if (!normalizedKey) return;
+        const keyId = keyIdForEvent(e, normalizedKey);
+
+        if (comboConsumedKeyIds.has(keyId)) {
+            e.preventDefault();
+            comboConsumedKeyIds.delete(keyId);
+            return;
+        }
+
+        if (activeKeys.has(keyId)) {
+            e.preventDefault();
+            stopKeyRepeat(keyId);
+            sendKey(activeKeys.get(keyId), 'up');
+            activeKeys.delete(keyId);
+        }
+    }, { passive: false });
+
+    window.addEventListener('blur', releaseAllHardwareKeys);
+    window.addEventListener('pagehide', releaseAllHardwareKeys);
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+            releaseAllHardwareKeys();
+        }
+    });
+}
+
 // ============ 模式切换 ============
 function initModeSwitching() {
     const modeBtns = document.querySelectorAll('.mode-btn');
@@ -1489,7 +1690,7 @@ function initModeSwitching() {
     };
 
     const modeDescs = {
-        'touch': '触控板模式：单指移动=光标，单指点击=左键，双击并按住=拖拽，双指点击=右键，双指滑动=滚轮',
+        'touch': '触控板模式：单指移动=光标，单指点击=左键，双击并按住=拖拽，双指点击=右键，双指滑动=滚轮，Ctrl+1=Esc，Ctrl+2=Win',
         'gamepad': '左摇杆=WASD，右侧滑动=视角，右侧按钮=技能/普攻，Alt=长按切换',
         'controller': '使用蓝牙手柄直通电脑端（虚拟 Xbox 手柄），游戏会自动切换原生手柄 UI'
     };
@@ -2060,6 +2261,7 @@ function init() {
     initGamepadMode();
     initPhysicalGamepadForwarding();
     initKeyboardMode();
+    initHardwareKeyboardForwarding();
     initModeSwitching();
     initSettings();
     updateFPS();

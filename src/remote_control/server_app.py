@@ -798,20 +798,41 @@ def handle_key_event(data):
             'Enter': 'return',
             'Return': 'return',
             'Space': 'space',
+            'Spacebar': 'space',
             'Tab': 'tab',
             'Backspace': 'backspace',
             'Delete': 'delete',
             'Escape': 'esc',
+            'Esc': 'esc',
             'ArrowUp': 'up',
             'ArrowDown': 'down',
             'ArrowLeft': 'left',
             'ArrowRight': 'right',
             'Control': 'ctrl',
+            'Ctrl': 'ctrl',
             'Alt': 'alt',
             'Shift': 'shift',
             'Meta': 'win',
             'Windows': 'win',
+            'Win': 'win',
+            'OS': 'win',
+            'Super': 'win',
+            'Home': 'home',
+            'End': 'end',
+            'PageUp': 'pageup',
+            'PageDown': 'pagedown',
+            'Insert': 'insert',
+            'CapsLock': 'capslock',
+            'NumLock': 'numlock',
+            'ScrollLock': 'scrolllock',
+            'PrintScreen': 'printscreen',
+            'Pause': 'pause',
+            'ContextMenu': 'contextmenu',
+            'Apps': 'contextmenu',
         }
+
+        for i in range(1, 25):
+            key_map[f'F{i}'] = f'f{i}'
 
         mapped_key = key_map.get(key, key)
 
