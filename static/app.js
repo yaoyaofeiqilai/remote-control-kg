@@ -5,6 +5,20 @@
 
 // ============ 全局配置 ============
 
+const CONFIG = {
+    mouseSensitivity: 3.0,
+    deadzone: 0.2,
+    maxStickDistance: 90,
+    lowLatencyMode: true,  // 低延迟模式
+    touchThrottleMs: 8,    // 触摸节流(约120Hz)
+    gameMode: {
+        cameraSensitivity: 100,
+        pinchSensitivity: 0.25,  // 双指缩放灵敏度（deltaDist -> 滚轮 dy）
+        webrtcScale: 1.0,
+        showCursorDot: true,     // 是否显示鼠标红点
+    }
+};
+
 
 const DEBUG_LOG_ENABLED = false;
 
@@ -449,6 +463,9 @@ function initTouchMode() {
     const DOUBLE_TAP_TIME = 800;      // 双击时间窗口（毫秒）
     const DOUBLE_TAP_DISTANCE = 100;  // 双击最大距离（像素）
     const CLICK_DELAY = 200;          // 单击延迟时间（等待确认不是双击）
+    const TWO_FINGER_TAP_MOVE_THRESHOLD = 10; // 双指轻触允许的抖动范围（像素）
+    const TWO_FINGER_SCROLL_DEADZONE = 2;     // 双指滚轮最小触发位移（像素）
+    const TWO_FINGER_TAP_MAX_DURATION = 420;  // 双指轻触最大时长（毫秒）
 
     // 获取灵敏度配置
     function getSensitivity() {
@@ -894,19 +911,27 @@ function initTouchMode() {
             if (touchState.lastX !== 0 && touchState.lastY !== 0) {
                 const deltaX = centerX - touchState.lastX;
                 const deltaY = centerY - touchState.lastY;
+                const movedFromStartX = Math.abs(centerX - touchState.startX);
+                const movedFromStartY = Math.abs(centerY - touchState.startY);
+
+                if (movedFromStartX > TWO_FINGER_TAP_MOVE_THRESHOLD || movedFromStartY > TWO_FINGER_TAP_MOVE_THRESHOLD) {
+                    touchState.hasMoved = true;
+                }
 
                 // 双指滑动映射为滚轮
                 // 垂直滑动 = 上下滚动，水平滑动 = 左右滚动
                 const scrollSensitivity = 3;
-                emit('mouse_scroll', {
-                    dx: Math.round(deltaX * scrollSensitivity),
-                    dy: Math.round(-deltaY * scrollSensitivity)
-                });
+                if (Math.abs(deltaX) >= TWO_FINGER_SCROLL_DEADZONE || Math.abs(deltaY) >= TWO_FINGER_SCROLL_DEADZONE) {
+                    emit('mouse_scroll', {
+                        dx: Math.round(deltaX * scrollSensitivity),
+                        dy: Math.round(-deltaY * scrollSensitivity)
+                    });
+                    touchState.hasMoved = true;
+                }
             }
 
             touchState.lastX = centerX;
             touchState.lastY = centerY;
-            touchState.hasMoved = true;
         }
     }, { passive: false });
 
@@ -927,7 +952,7 @@ function initTouchMode() {
         // 双指检测：如果开始时是双指
         if (touchState.touchCount === 2) {
             // 双指点击（没有移动）= 右键
-            if (touchDuration < 300 && !touchState.hasMoved) {
+            if (touchDuration < TWO_FINGER_TAP_MAX_DURATION && !touchState.hasMoved) {
                 playClickAnimation();
                 emit('mouse_click', { button: 'right', action: 'down' });
                 setTimeout(() => {
