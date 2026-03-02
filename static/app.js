@@ -219,12 +219,12 @@ function startWebRTCFreezeWatchdog() {
 function scheduleWebRTCRestart(reason, delayMs = 1200) {
     debugLog('[WebRTC] restart scheduled:', reason);
     stopWebRTC();
-    startMJPEG();
+    stopMJPEG();
 
     if (!state.connected) return;
     if (state.webrtc.restartTimer) return;
     if (state.webrtc.restartAttempts >= state.webrtc.maxRestartAttempts) {
-        debugLog('[WebRTC] restart capped, stay on MJPEG');
+        debugLog('[WebRTC] restart capped');
         return;
     }
 
@@ -237,23 +237,14 @@ function scheduleWebRTCRestart(reason, delayMs = 1200) {
             await startWebRTC();
             state.webrtc.restartAttempts = 0;
         } catch (e) {
-            startMJPEG();
             scheduleWebRTCRestart('restart_failed', nextDelay * 2);
         }
     }, nextDelay);
 }
 
 function startMJPEG() {
-    const screenImg = document.getElementById('screen');
-    const videoEl = document.getElementById('screen-video');
-    if (videoEl) {
-        videoEl.classList.add('hidden');
-        videoEl.srcObject = null;
-    }
-    if (screenImg) {
-        screenImg.classList.remove('hidden');
-        screenImg.src = '/video?' + Date.now();
-    }
+    // MJPEG fallback disabled: keep the image element hidden.
+    stopMJPEG();
     state.webrtc.using = false;
 }
 
@@ -387,6 +378,7 @@ async function startWebRTC() {
     if (!videoEl || !screenImg) return false;
 
     clearWebRTCRestartTimer();
+    stopMJPEG();
     stopWebRTC();
 
     const pc = new RTCPeerConnection({ iceServers: [] });
@@ -453,8 +445,7 @@ async function startVideoTransport() {
     try {
         await startWebRTC();
     } catch (e) {
-        startMJPEG();
-        state.webrtc.restartAttempts = 0;
+        scheduleWebRTCRestart('startup_failed', 1200);
     }
 }
 
@@ -475,10 +466,10 @@ function initAudioUnlockControls() {
 
     updateAudioUnlockButton();
 }
-// ============ Socket.IO 杩炴帴 ============
+// ============ Socket.IO 连接 ============
 function initSocket() {
     const statusEl = document.getElementById('connection-status');
-    statusEl.textContent = '杩炴帴涓?..';
+    statusEl.textContent = '连接中...';
     statusEl.className = 'connecting';
 
     state.socket = io({
@@ -501,7 +492,7 @@ function initSocket() {
     });
 
     state.socket.on('disconnect', () => {
-        debugLog('[Socket] 宸叉柇寮€');
+        debugLog('[Socket] disconnected');
         state.connected = false;
         clearWebRTCRestartTimer();
         state.webrtc.restartAttempts = 0;
@@ -509,28 +500,28 @@ function initSocket() {
             state.physicalGamepad.serverAttached = false;
             state.physicalGamepad.connected = false;
         }
-        statusEl.textContent = '宸叉柇寮€';
+        statusEl.textContent = '已断开';
         statusEl.className = 'disconnected';
         stopWebRTC();
     });
 
     state.socket.on('connect_error', (err) => {
-        console.error('[Socket] 杩炴帴閿欒:', err);
-        statusEl.textContent = '杩炴帴澶辫触';
+        console.error('[Socket] connect error:', err);
+        statusEl.textContent = '连接失败';
         statusEl.className = 'disconnected';
     });
 
     state.socket.on('connected', (data) => {
         state.screenWidth = data.screen_width;
         state.screenHeight = data.screen_height;
-        debugLog('[Socket] 灞忓箷灏哄:', state.screenWidth, 'x', state.screenHeight);
+        debugLog('[Socket] screen size:', state.screenWidth, 'x', state.screenHeight);
 
-        // 鍒濆鍖栬櫄鎷熼紶鏍囦綅缃负灞忓箷涓績
+        // 初始化虚拟鼠标位置到屏幕中心
         if (!state.virtualMouse) {
             state.virtualMouse = { x: state.screenWidth / 2, y: state.screenHeight / 2 };
         }
 
-        // 寮€濮嬪悓姝ラ紶鏍囦綅缃?
+        // 启动鼠标位置同步
         startMouseSync();
 
         const qualitySlider = document.getElementById('quality-slider');
@@ -549,21 +540,48 @@ function initSocket() {
         startVideoTransport();
     });
 
-    // 鐩戝惉鏈嶅姟绔繑鍥炵殑榧犳爣浣嶇疆
+    state.socket.on('fps_updated', (data) => {
+        if (!data) return;
+        const v = parseInt(data.webrtc_fps ?? data.fps ?? 30, 10);
+        if (!Number.isFinite(v)) return;
+        const fpsSlider = document.getElementById('fps-slider');
+        const fpsValue = document.getElementById('fps-value');
+        if (fpsSlider) fpsSlider.value = String(v);
+        if (fpsValue) fpsValue.textContent = String(v);
+    });
+
+    state.socket.on('quality_updated', (data) => {
+        if (!data) return;
+        const v = parseInt(data.quality ?? 80, 10);
+        if (!Number.isFinite(v)) return;
+        const qualitySlider = document.getElementById('quality-slider');
+        const qualityValue = document.getElementById('quality-value');
+        if (qualitySlider) qualitySlider.value = String(v);
+        if (qualityValue) qualityValue.textContent = String(v);
+    });
+
+    state.socket.on('webrtc_scale_updated', (data) => {
+        if (!data) return;
+        const v = parseFloat(data.scale ?? 1.0);
+        if (!Number.isFinite(v)) return;
+        const webrtcScaleSlider = document.getElementById('webrtc-scale-slider');
+        const webrtcScaleValue = document.getElementById('webrtc-scale-value');
+        if (webrtcScaleSlider) webrtcScaleSlider.value = String(v);
+        if (webrtcScaleValue) webrtcScaleValue.textContent = v.toFixed(1) + 'x';
+    });
+
+    // Sync virtual cursor with server mouse position.
     state.socket.on('mouse_pos', (data) => {
         if (!state.virtualMouse) return;
 
-        // 濡傛灉鍦ㄨЕ鎽哥姸鎬侊紝妫€鏌ュ亸宸槸鍚﹁繃澶э紝闇€瑕佹椂鏍″噯
+        // Keep local cursor stable while touching; only warn on large drift.
         if (state.isTouching) {
-            // 鍦ㄨЕ鎽告ā寮忎笅锛屽彧鏈夊亸宸繃澶ф墠鏍″噯锛堟煇浜涚獥鍙ｄ細鎹曡幏榧犳爣锛?
             const dx = Math.abs(state.virtualMouse.x - data.x);
             const dy = Math.abs(state.virtualMouse.y - data.y);
             if (dx > 200 || dy > 200) {
-                debugLog(`[璀﹀憡] 瑙︽懜鏃朵綅缃亸宸繃澶?(${dx.toFixed(0)}, ${dy.toFixed(0)})`);
-                // 涓嶇珛鍗虫牎鍑嗭紝閬垮厤璺宠穬锛屼絾璁板綍闂
+                debugLog(`[警告] 触摸时位置偏差过大 (${dx.toFixed(0)}, ${dy.toFixed(0)})`);
             }
         } else {
-            // 闈炶Е鎽哥姸鎬侊紝鐩存帴鍚屾鏈嶅姟绔綅缃?
             state.virtualMouse.x = data.x;
             state.virtualMouse.y = data.y;
             updateVirtualCursorDisplay();
@@ -575,22 +593,32 @@ function initSocket() {
     });
 }
 
-// 瀹氭湡鍚屾榧犳爣浣嶇疆锛堟瘡50ms锛?
+// 定时同步鼠标位置
 let mouseSyncInterval = null;
 
 function startMouseSync() {
     if (mouseSyncInterval) return;
+    const intervalMs = CONFIG.lowLatencyMode ? 50 : 90;
     mouseSyncInterval = setInterval(() => {
         if (state.connected && !state.isTouching) {
             emit('get_mouse_pos');
         }
-    }, 50);
+    }, intervalMs);
 }
 
 function stopMouseSync() {
     if (mouseSyncInterval) {
         clearInterval(mouseSyncInterval);
         mouseSyncInterval = null;
+    }
+}
+
+function applyLowLatencyMode(enabled) {
+    CONFIG.lowLatencyMode = !!enabled;
+    CONFIG.touchThrottleMs = CONFIG.lowLatencyMode ? 8 : 16;
+    if (state.connected) {
+        stopMouseSync();
+        startMouseSync();
     }
 }
 
@@ -1053,7 +1081,7 @@ function initTouchMode() {
                 // 鍙戦€?left down锛堝紑濮嬫嫋鎷斤級
                 emit('mouse_click', { button: 'left', action: 'down' });
                 playClickAnimation();
-                debugLog('[瑙︽帶] 杩涘叆鎷栨嫿妯″紡');
+                debugLog('[触控] 进入拖拽模式');
             } else {
                 // 绗竴娆＄偣鍑伙紝涓嶇珛鍗虫墽琛岋紝寤惰繜绛夊緟纭鏄惁鏄弻鍑?
                 touchState.isSecondTap = false;
@@ -1900,7 +1928,7 @@ function initHardwareKeyboardForwarding() {
     });
 }
 
-// ============ 妯″紡鍒囨崲 ============
+// ============ 模式切换 ============
 function initModeSwitching() {
     const modeBtns = document.querySelectorAll('.mode-btn');
     const touchOverlay = document.getElementById('touch-overlay');
@@ -1910,15 +1938,15 @@ function initModeSwitching() {
     const globalSettings = document.getElementById('global-settings');
 
     const modeNames = {
-        'touch': '瑙︽帶妯″紡',
-        'gamepad': '娓告垙妯″紡',
-        'controller': '鎵嬫焺妯″紡'
+        'touch': '触控模式',
+        'gamepad': '游戏模式',
+        'controller': '手柄模式'
     };
 
     const modeDescs = {
-        'touch': '瑙︽帶鏉挎ā寮忥細鍗曟寚绉诲姩=鍏夋爣锛屽崟鎸囩偣鍑?宸﹂敭锛屽弻鍑诲苟鎸変綇=鎷栨嫿锛屽弻鎸囩偣鍑?鍙抽敭锛屽弻鎸囨粦鍔?婊氳疆锛孋trl+1=Esc锛孋trl+2=Win',
-        'gamepad': '宸︽憞鏉?WASD锛屽彸渚ф粦鍔?瑙嗚锛屽彸渚ф寜閽?鎶€鑳?鏅敾锛孉lt=闀挎寜鍒囨崲',
-        'controller': '浣跨敤钃濈墮鎵嬫焺鐩撮€氱數鑴戠锛堣櫄鎷?Xbox 鎵嬫焺锛夛紝娓告垙浼氳嚜鍔ㄥ垏鎹㈠師鐢熸墜鏌?UI'
+        'touch': '单指移动光标，单指点击左键，双指点击右键，双指滑动滚轮（支持 Ctrl+1=Esc，Ctrl+2=Win）',
+        'gamepad': '左侧摇杆移动，右侧滑动转视角，动作按钮放在右侧，Alt 可长按切换',
+        'controller': '蓝牙手柄直通电脑端（虚拟 Xbox 手柄），游戏可自动切换原生手柄 UI'
     };
 
     modeBtns.forEach(btn => {
@@ -1983,7 +2011,7 @@ function initModeSwitching() {
     });
 }
 
-// ============ 璁剧疆闈㈡澘 ============
+// ============ 设置面板 ============
 function initSettings() {
     const settingsBtn = document.getElementById('settings-btn');
     const settingsPanel = document.getElementById('settings-panel');
@@ -1991,7 +2019,7 @@ function initSettings() {
     const fullscreenBtn = document.getElementById('fullscreen-btn');
     const fullscreenText = document.getElementById('fullscreen-text');
 
-    // 鐢昏川婊戝潡
+    // 画质滑块
     const qualitySlider = document.getElementById('quality-slider');
     const qualityValue = document.getElementById('quality-value');
     qualityValue.textContent = qualitySlider.value;
@@ -1999,8 +2027,14 @@ function initSettings() {
         qualityValue.textContent = qualitySlider.value;
         emit('set_quality', { quality: parseInt(qualitySlider.value) });
     });
+    qualitySlider.addEventListener('change', () => {
+        if (state.webrtc.using) {
+            // Bitrate tuning is negotiated in SDP; restart once on release.
+            scheduleWebRTCRestart('quality_changed', 200);
+        }
+    });
 
-    // 甯х巼婊戝潡
+    // 帧率滑块
     const fpsSlider = document.getElementById('fps-slider');
     const fpsValue = document.getElementById('fps-value');
     fpsValue.textContent = fpsSlider.value;
@@ -2009,7 +2043,7 @@ function initSettings() {
         emit('set_fps', { fps: parseInt(fpsSlider.value) });
     });
 
-    // 鐏垫晱搴︽粦鍧?
+    // 鼠标灵敏度滑块
     const sensitivitySlider = document.getElementById('sensitivity-slider');
     const sensitivityValue = document.getElementById('sensitivity-value');
     CONFIG.mouseSensitivity = parseFloat(sensitivitySlider.value);
@@ -2031,7 +2065,7 @@ function initSettings() {
                 if (keyboardToggleBtn.tagName === 'INPUT') {
                     keyboardToggleBtn.checked = true;
                 } else {
-                    keyboardToggleBtn.textContent = '鏀惰捣';
+                    keyboardToggleBtn.textContent = '收起';
                     keyboardToggleBtn.classList.add('active');
                 }
                 if (keyboardToggleText) keyboardToggleText.textContent = '开启';
@@ -2040,10 +2074,10 @@ function initSettings() {
                 if (keyboardToggleBtn.tagName === 'INPUT') {
                     keyboardToggleBtn.checked = false;
                 } else {
-                    keyboardToggleBtn.textContent = '鍞ゅ嚭';
+                    keyboardToggleBtn.textContent = '唤出';
                     keyboardToggleBtn.classList.remove('active');
                 }
-                if (keyboardToggleText) keyboardToggleText.textContent = '鍏抽棴';
+                if (keyboardToggleText) keyboardToggleText.textContent = '关闭';
             }
         };
         applyKeyboardVisible(false);
@@ -2058,12 +2092,13 @@ function initSettings() {
         }
     }
 
-    // 浣庡欢杩熸ā寮?
+    // 低延迟模式
     const lowLatencyCheckbox = document.getElementById('low-latency-mode');
     if (lowLatencyCheckbox) {
+        applyLowLatencyMode(lowLatencyCheckbox.checked);
         lowLatencyCheckbox.addEventListener('change', () => {
-            CONFIG.lowLatencyMode = lowLatencyCheckbox.checked;
-            debugLog('[Config] 浣庡欢杩熸ā寮?', CONFIG.lowLatencyMode);
+            applyLowLatencyMode(lowLatencyCheckbox.checked);
+            debugLog('[Config] low latency mode:', CONFIG.lowLatencyMode);
         });
     }
 
@@ -2170,7 +2205,7 @@ function initGameModeSettings() {
             const value = parseInt(cameraSensitivitySlider.value);
             cameraSensitivityValue.textContent = value;
             CONFIG.gameMode.cameraSensitivity = value;
-            debugLog('[Config] 瑙嗚鐏垫晱搴?', value);
+            debugLog('[Config] 视角灵敏度', value);
         });
     }
 
@@ -2181,7 +2216,7 @@ function initGameModeSettings() {
             const value = parseFloat(pinchSensitivitySlider.value);
             pinchSensitivityValue.textContent = value.toFixed(2).replace(/\.00$/, '');
             CONFIG.gameMode.pinchSensitivity = value;
-            debugLog('[Config] 鍙屾寚缂╂斁鐏垫晱搴?', value);
+            debugLog('[Config] 双指缩放灵敏度', value);
         });
     }
 
@@ -2204,9 +2239,9 @@ function initGameModeSettings() {
     if (showCursorDotCheckbox && cursorDotStatus) {
         showCursorDotCheckbox.addEventListener('change', () => {
             CONFIG.gameMode.showCursorDot = showCursorDotCheckbox.checked;
-            cursorDotStatus.textContent = showCursorDotCheckbox.checked ? '鏄剧ず' : '闅愯棌';
+            cursorDotStatus.textContent = showCursorDotCheckbox.checked ? '显示' : '隐藏';
             updateCursorDotVisibility();
-            debugLog('[Config] 鏄剧ず榧犳爣绾㈢偣:', CONFIG.gameMode.showCursorDot);
+            debugLog('[Config] 显示鼠标红点:', CONFIG.gameMode.showCursorDot);
         });
     }
 }
@@ -2520,7 +2555,7 @@ function init() {
         lastTouchEnd = now;
     }, false);
 
-    debugLog('[App] 鍒濆鍖栧畬鎴愶紝浣庡欢杩熸ā寮?', CONFIG.lowLatencyMode);
+    debugLog('[App] 初始化完成，低延迟模式:', CONFIG.lowLatencyMode);
 }
 
 // 椤甸潰鍔犺浇瀹屾垚鍚庡垵濮嬪寲

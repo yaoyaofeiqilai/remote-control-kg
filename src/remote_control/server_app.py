@@ -166,16 +166,56 @@ quality = 60  # Cleaned garbled comment.
 fps = 30  # Cleaned garbled comment.
 
 webrtc_enabled = True
-webrtc_target_fps = _env_int("RC_WEBRTC_FPS", 24, 5, 60)
+webrtc_target_fps = _env_int("RC_WEBRTC_FPS", 30, 5, 60)
 _screen_size = pyautogui.size()
 webrtc_scale = _env_float("RC_WEBRTC_SCALE", 1.0, 0.25, 1.0)
 webrtc_max_width = _env_int("RC_WEBRTC_MAX_WIDTH", int(_screen_size.width), 320, 7680)
 webrtc_max_height = _env_int("RC_WEBRTC_MAX_HEIGHT", int(_screen_size.height), 240, 4320)
+capture_all_monitors = _env_flag("RC_CAPTURE_ALL_MONITORS", False)
+mjpeg_enabled = _env_flag("RC_MJPEG_ENABLED", False)
+webrtc_bitrate_auto = _env_flag("RC_WEBRTC_AUTO_BITRATE", True)
+webrtc_target_bitrate_kbps = _env_int("RC_WEBRTC_BITRATE_KBPS", 12000, 500, 60000)
 webrtc_peers = {}
 webrtc_audio_tracks = {}
 webrtc_loop = None
 webrtc_loop_thread = None
 webrtc_frame_pump = None
+
+
+def _estimate_webrtc_bitrate_kbps():
+    """Estimate a sane video bitrate target from quality/fps/scale."""
+    try:
+        size = pyautogui.size()
+        screen_w = int(size.width)
+        screen_h = int(size.height)
+    except Exception:
+        screen_w = int(getattr(_screen_size, "width", 1920))
+        screen_h = int(getattr(_screen_size, "height", 1080))
+
+    scale = max(0.25, min(1.0, float(webrtc_scale)))
+    fps_now = max(15, min(60, int(webrtc_target_fps)))
+    quality_now = max(10, min(95, int(quality)))
+
+    target_w = max(320, int(screen_w * scale))
+    target_h = max(240, int(screen_h * scale))
+    mpix_per_s = (float(target_w) * float(target_h) * float(fps_now)) / 1_000_000.0
+
+    # 10..95 => 0.4..1.5
+    quality_factor = 0.4 + ((quality_now - 10) / 85.0) * 1.1
+    kbps = int(mpix_per_s * 80.0 * quality_factor)
+    return max(800, min(60000, kbps))
+
+
+def _sync_webrtc_bitrate_target():
+    """Refresh bitrate target when quality/fps/scale changes."""
+    global webrtc_target_bitrate_kbps
+    if webrtc_bitrate_auto:
+        webrtc_target_bitrate_kbps = _estimate_webrtc_bitrate_kbps()
+    return int(webrtc_target_bitrate_kbps)
+
+
+_sync_webrtc_bitrate_target()
+
 
 audio_enabled = _env_flag("RC_AUDIO_ENABLED", True)
 audio_device_name = (os.getenv("RC_AUDIO_DEVICE_NAME", "CABLE Output") or "").strip()
@@ -638,7 +678,35 @@ def get_mss():
     monitor = getattr(mss_local, "monitor", None)
     if inst is None or monitor is None:
         inst = mss.mss()
-        monitor = inst.monitors[0]
+        monitors = getattr(inst, "monitors", []) or []
+        monitor = None
+        if capture_all_monitors:
+            monitor = monitors[0] if monitors else None
+        else:
+            if len(monitors) > 1:
+                # Prefer a single physical monitor close to OS-reported screen size.
+                try:
+                    screen = pyautogui.size()
+                    sw = int(screen.width)
+                    sh = int(screen.height)
+                    best = None
+                    best_score = None
+                    for mon in monitors[1:]:
+                        mw = int(mon.get("width", 0))
+                        mh = int(mon.get("height", 0))
+                        if mw <= 0 or mh <= 0:
+                            continue
+                        score = abs(mw - sw) + abs(mh - sh)
+                        if best is None or score < best_score:
+                            best = mon
+                            best_score = score
+                    monitor = best if best is not None else monitors[1]
+                except Exception:
+                    monitor = monitors[1]
+            elif monitors:
+                monitor = monitors[0]
+        if monitor is None:
+            raise RuntimeError("mss monitor list is empty")
         mss_local.inst = inst
         mss_local.monitor = monitor
     return inst, monitor
@@ -725,6 +793,25 @@ def capture_screen_rgb_np():
         return None
 
 
+def resize_rgb_frame(frame, target_w, target_h):
+    """Resize RGB ndarray with Pillow for non-integer scales."""
+    h, w = frame.shape[:2]
+    target_w = int(max(2, target_w))
+    target_h = int(max(2, target_h))
+    if target_w == w and target_h == h:
+        return frame
+    try:
+        resample = Image.Resampling.BILINEAR
+    except Exception:
+        resample = Image.BILINEAR
+    img = Image.fromarray(frame, mode="RGB")
+    resized = img.resize((target_w, target_h), resample=resample)
+    arr = np.asarray(resized, dtype=np.uint8)
+    if arr.flags["C_CONTIGUOUS"]:
+        return arr
+    return np.ascontiguousarray(arr)
+
+
 class WebRTCFramePump:
     def __init__(self):
         self._lock = threading.Lock()
@@ -781,14 +868,18 @@ class WebRTCFramePump:
         except Exception:
             pass
         try:
-            inst = getattr(mss_local, "instance", None)
+            inst = getattr(mss_local, "inst", None)
             if inst is not None:
                 try:
                     inst.close()
                 except Exception:
                     pass
                 try:
-                    delattr(mss_local, "instance")
+                    delattr(mss_local, "inst")
+                except Exception:
+                    pass
+                try:
+                    delattr(mss_local, "monitor")
                 except Exception:
                     pass
         except Exception:
@@ -815,40 +906,37 @@ class WebRTCFramePump:
                 continue
 
             if frame is None:
-                interval = 1.0 / max(1, int(webrtc_target_fps))
+                interval = 1.0 / max(15, min(60, int(webrtc_target_fps)))
                 dt = time.time() - t0
                 sleep_time = interval - dt
                 if sleep_time > 0:
                     time.sleep(sleep_time)
                 continue
 
-            # Apply requested scale first (supports coarse downsample steps).
+            # Apply requested scale first.
             scale = float(webrtc_scale)
             if scale < 0.99:
-                step = int(round(1.0 / max(0.25, scale)))
-                step = max(1, min(step, 4))
-                if step > 1:
-                    frame = frame[::step, ::step, :]
+                h, w = frame.shape[:2]
+                target_w = max(2, int(round(float(w) * max(0.25, min(1.0, scale)))))
+                target_h = max(2, int(round(float(h) * max(0.25, min(1.0, scale)))))
+                frame = resize_rgb_frame(frame, target_w, target_h)
 
             # Hard safety cap for mobile/browser stability.
             h, w = frame.shape[:2]
-            step_w = int(np.ceil(float(w) / float(max(1, webrtc_max_width))))
-            step_h = int(np.ceil(float(h) / float(max(1, webrtc_max_height))))
-            cap_step = max(1, step_w, step_h)
-            if cap_step > 1:
-                frame = frame[::cap_step, ::cap_step, :]
+            max_w = max(1, int(webrtc_max_width))
+            max_h = max(1, int(webrtc_max_height))
+            if w > max_w or h > max_h:
+                ratio = min(float(max_w) / float(w), float(max_h) / float(h))
+                target_w = max(2, int(round(float(w) * ratio)))
+                target_h = max(2, int(round(float(h) * ratio)))
+                frame = resize_rgb_frame(frame, target_w, target_h)
 
             frame = np.ascontiguousarray(frame)
             with self._lock:
                 self._latest = frame
                 self._latest_ts = float(time.time())
 
-            # Prevent backlog at very high resolutions while keeping detail.
-            target_fps = max(1, int(webrtc_target_fps))
-            if frame is not None:
-                h2, w2 = frame.shape[:2]
-                if (w2 * h2) >= 3000000 and target_fps > 20:
-                    target_fps = 20
+            target_fps = max(15, min(60, int(webrtc_target_fps)))
             interval = 1.0 / target_fps
             dt = time.time() - t0
             sleep_time = interval - dt
@@ -1171,10 +1259,29 @@ if WEBRTC_AVAILABLE:
             self._last = None
             self._created_ts = float(time.time())
             self._last_pump_restart_ts = 0.0
+            self._clock_rate = 90000
+            self._time_base = Fraction(1, self._clock_rate)
+            self._timestamp = 0
+            self._started_at = None
 
         async def recv(self):
             global webrtc_target_fps
-            pts, time_base = await self.next_timestamp()
+            target_fps = max(15, min(60, int(webrtc_target_fps)))
+            ticks_per_frame = max(1, int(self._clock_rate / target_fps))
+            wait_s = 0.0
+            if self._started_at is None:
+                self._started_at = time.time()
+                self._timestamp = 0
+            else:
+                self._timestamp += ticks_per_frame
+                target_time = self._started_at + (self._timestamp / float(self._clock_rate))
+                # Drop scheduling debt if loop falls too far behind.
+                if target_time < (time.time() - 0.25):
+                    self._started_at = time.time() - (self._timestamp / float(self._clock_rate))
+                    target_time = self._started_at + (self._timestamp / float(self._clock_rate))
+                wait_s = target_time - time.time()
+            if wait_s > 0:
+                await asyncio.sleep(wait_s)
 
             # If frame pump is stale for too long, restart capture backend.
             frame_age = self._pump.frame_age()
@@ -1199,8 +1306,8 @@ if WEBRTC_AVAILABLE:
             self._last = frame
 
             vf = VideoFrame.from_ndarray(frame, format="rgb24")
-            vf.pts = pts
-            vf.time_base = time_base
+            vf.pts = self._timestamp
+            vf.time_base = self._time_base
             return vf
 
 
@@ -1278,6 +1385,12 @@ def index():
 @app.route('/video')
 def video_feed():
     """MJPEG video endpoint."""
+    if not mjpeg_enabled:
+        return {
+            'enabled': False,
+            'error': 'mjpeg_disabled',
+            'message': 'MJPEG disabled, use WebRTC transport',
+        }, 410
     return Response(
         generate_video_stream(),
         mimetype='multipart/x-mixed-replace; boundary=frame',
@@ -1298,7 +1411,12 @@ def server_info():
         'clients': connected_clients,
         'screen_size': pyautogui.size(),
         'quality': quality,
-        'fps': fps
+        'fps': fps,
+        'mjpeg_enabled': bool(mjpeg_enabled),
+        'webrtc_fps': webrtc_target_fps,
+        'webrtc_scale': webrtc_scale,
+        'webrtc_bitrate_kbps': webrtc_target_bitrate_kbps,
+        'capture_all_monitors': bool(capture_all_monitors),
     }
 
 
@@ -1491,6 +1609,60 @@ def _webrtc_apply_codec_preferences(pc: RTCPeerConnection):
         pass
 
 
+def _webrtc_munge_answer_sdp(sdp: str, bitrate_kbps: int, target_fps: int) -> str:
+    """Inject video bitrate/fps hints into SDP answer."""
+    bitrate_kbps = max(500, min(60000, int(bitrate_kbps)))
+    target_fps = max(15, min(60, int(target_fps)))
+
+    lines = sdp.splitlines()
+    out = []
+    in_video = False
+    framerate_set = False
+
+    for line in lines:
+        stripped = line.strip()
+        lower = stripped.lower()
+
+        if stripped.startswith("m="):
+            if in_video and not framerate_set:
+                out.append(f"a=framerate:{target_fps}")
+            in_video = stripped.startswith("m=video")
+            framerate_set = False
+            out.append(line)
+            if in_video:
+                out.append(f"b=AS:{bitrate_kbps}")
+                out.append(f"b=TIAS:{bitrate_kbps * 1000}")
+            continue
+
+        if in_video:
+            if lower.startswith("b=as:") or lower.startswith("b=tias:"):
+                continue
+            if lower.startswith("a=framerate:"):
+                out.append(f"a=framerate:{target_fps}")
+                framerate_set = True
+                continue
+            if lower.startswith("a=fmtp:"):
+                extras = []
+                if "x-google-start-bitrate=" not in lower:
+                    extras.append(f"x-google-start-bitrate={bitrate_kbps}")
+                if "x-google-max-bitrate=" not in lower:
+                    extras.append(f"x-google-max-bitrate={bitrate_kbps}")
+                if "x-google-min-bitrate=" not in lower:
+                    extras.append("x-google-min-bitrate=300")
+                if extras:
+                    line = f"{line};{';'.join(extras)}"
+            out.append(line)
+            continue
+
+        out.append(line)
+
+    if in_video and not framerate_set:
+        out.append(f"a=framerate:{target_fps}")
+
+    sep = "\r\n" if "\r\n" in sdp else "\n"
+    return sep.join(out) + sep
+
+
 async def _webrtc_close_peer(sid: str, keep_frame_pump: bool = False):
     global webrtc_frame_pump
     audio_track = webrtc_audio_tracks.pop(sid, None)
@@ -1552,8 +1724,14 @@ async def _webrtc_handle_offer(sid: str, offer_sdp: str, offer_type: str):
 
     _webrtc_apply_codec_preferences(pc)
 
+    _sync_webrtc_bitrate_target()
     answer = await pc.createAnswer()
-    await pc.setLocalDescription(answer)
+    answer_sdp = _webrtc_munge_answer_sdp(
+        answer.sdp,
+        bitrate_kbps=webrtc_target_bitrate_kbps,
+        target_fps=webrtc_target_fps,
+    )
+    await pc.setLocalDescription(RTCSessionDescription(sdp=answer_sdp, type=answer.type))
     await _webrtc_wait_ice_complete(pc)
     return {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
 
@@ -2081,19 +2259,21 @@ def handle_set_quality(data, sid=None):
     global quality
     new_quality = max(10, min(95, data.get('quality', 60)))
     quality = new_quality
-    print(f"[Settings] quality updated: {quality}")
-    emit('quality_updated', {'quality': quality})
+    bitrate_kbps = _sync_webrtc_bitrate_target()
+    print(f"[Settings] quality updated: {quality}, webrtc_bitrate={bitrate_kbps}kbps")
+    emit('quality_updated', {'quality': quality, 'webrtc_bitrate_kbps': bitrate_kbps})
 
 
 @socketio.on('set_fps')
 def handle_set_fps(data, sid=None):
     """Cleaned garbled docstring."""
     global fps, webrtc_target_fps
-    new_fps = max(10, min(60, data.get('fps', 30)))
+    new_fps = max(15, min(60, data.get('fps', 30)))
     fps = new_fps
     webrtc_target_fps = new_fps
-    print(f"[Settings] FPS updated: {fps}")
-    emit('fps_updated', {'fps': fps, 'webrtc_fps': webrtc_target_fps})
+    bitrate_kbps = _sync_webrtc_bitrate_target()
+    print(f"[Settings] FPS updated: {fps}, webrtc_bitrate={bitrate_kbps}kbps")
+    emit('fps_updated', {'fps': fps, 'webrtc_fps': webrtc_target_fps, 'webrtc_bitrate_kbps': bitrate_kbps})
 
 
 @socketio.on('set_webrtc_scale')
@@ -2104,8 +2284,9 @@ def handle_set_webrtc_scale(data):
     except Exception:
         scale = webrtc_scale
 
-    webrtc_scale = 0.5 if scale < 0.75 else 1.0
-    emit('webrtc_scale_updated', {'scale': webrtc_scale})
+    webrtc_scale = max(0.25, min(1.0, float(scale)))
+    bitrate_kbps = _sync_webrtc_bitrate_target()
+    emit('webrtc_scale_updated', {'scale': webrtc_scale, 'webrtc_bitrate_kbps': bitrate_kbps})
 
 
 @socketio.on('set_capture_mode')

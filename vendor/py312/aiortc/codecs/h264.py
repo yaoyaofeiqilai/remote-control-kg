@@ -140,7 +140,10 @@ def create_encoder_context(
         options.update(
             {
                 "preset": "superfast",
-                "x264-params": f"keyint={MAX_FRAME_RATE}:min-keyint={MAX_FRAME_RATE}:scenecut=0:rc-lookahead=0",
+                "x264-params": (
+                    f"keyint={MAX_FRAME_RATE}:min-keyint={MAX_FRAME_RATE}:"
+                    "scenecut=0:rc-lookahead=0:sync-lookahead=0:bframes=0:force-cfr=1"
+                ),
             }
         )
     codec.options = options
