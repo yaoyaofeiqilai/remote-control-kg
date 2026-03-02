@@ -146,6 +146,15 @@ try:
 except Exception as e:
     print(f"[Audio] sounddevice load failed: {e}")
 
+SOUNDCARD_AVAILABLE = False
+sc = None
+try:
+    import soundcard as _sc
+    sc = _sc
+    SOUNDCARD_AVAILABLE = True
+except Exception as e:
+    print(f"[Audio] soundcard load failed: {e}")
+
 # Cleaned garbled comment.
 pyautogui.FAILSAFE = True
 pyautogui.PAUSE = 0.01
@@ -170,6 +179,7 @@ webrtc_frame_pump = None
 
 audio_enabled = _env_flag("RC_AUDIO_ENABLED", True)
 audio_device_name = (os.getenv("RC_AUDIO_DEVICE_NAME", "CABLE Output") or "").strip()
+audio_prefer_wasapi_loopback = _env_flag("RC_AUDIO_PREFER_WASAPI_LOOPBACK", True)
 audio_sample_rate = _env_int("RC_AUDIO_SAMPLE_RATE", 48000, 8000, 192000)
 audio_channels = _env_int("RC_AUDIO_CHANNELS", 2, 1, 2)
 audio_frame_ms = _env_int("RC_AUDIO_FRAME_MS", 20, 10, 120)
@@ -180,6 +190,7 @@ audio_status_lock = threading.Lock()
 audio_status = {
     "enabled": bool(audio_enabled),
     "sounddevice_available": bool(SOUNDDEVICE_AVAILABLE),
+    "soundcard_available": bool(SOUNDCARD_AVAILABLE),
     "webrtc_available": bool(WEBRTC_AVAILABLE),
     "device_name_hint": audio_device_name,
     "sample_rate": int(audio_sample_rate),
@@ -188,6 +199,7 @@ audio_status = {
     "frame_samples": int(audio_frame_samples),
     "selected_device": None,
     "device_index": None,
+    "capture_mode": "",
     "capture_running": False,
     "frames_generated": 0,
     "dropped_frames": 0,
@@ -299,7 +311,7 @@ def _audio_select_input_device(devices):
 
         loopback_tokens = (
             "stereo mix",
-            "立体声混音",
+            "\u7acb\u4f53\u58f0\u6df7\u97f3",
             "loopback",
             "what u hear",
             "wave out mix",
@@ -317,7 +329,13 @@ def _audio_select_input_device(devices):
             score += 10
 
         # Avoid choosing microphones by default.
-        mic_tokens = ("microphone", "mic", "麦克风", "阵列", "array")
+        mic_tokens = (
+            "microphone",
+            "mic",
+            "\u9ea6\u514b\u98ce",
+            "\u9635\u5217",
+            "array",
+        )
         if any(tok in name for tok in mic_tokens):
             score -= 200
 
@@ -357,6 +375,173 @@ def _audio_rank_input_devices(devices):
         ranked.append(selected)
         tmp_devices = [d for d in tmp_devices if int(d.get("index", -1)) != idx]
     return ranked
+
+
+def _audio_list_wasapi_output_devices():
+    if not SOUNDDEVICE_AVAILABLE or sd is None:
+        return []
+
+    devices = []
+    try:
+        hostapis = sd.query_hostapis()
+        all_devices = sd.query_devices()
+    except Exception as e:
+        _audio_set_error(f"query_output_devices_failed: {e}")
+        return []
+
+    for idx, dev in enumerate(all_devices):
+        max_output = int(dev.get("max_output_channels", 0) or 0)
+        if max_output <= 0:
+            continue
+
+        hostapi_name = ""
+        hostapi_idx = dev.get("hostapi", None)
+        if isinstance(hostapi_idx, int) and 0 <= hostapi_idx < len(hostapis):
+            hostapi_name = str(hostapis[hostapi_idx].get("name", ""))
+        if "wasapi" not in hostapi_name.lower():
+            continue
+
+        devices.append({
+            "index": int(idx),
+            "name": str(dev.get("name", "")),
+            "hostapi": hostapi_name,
+            "max_output_channels": max_output,
+            "default_samplerate": float(dev.get("default_samplerate", 0.0) or 0.0),
+        })
+
+    return devices
+
+
+def _audio_list_loopback_speakers():
+    if not SOUNDCARD_AVAILABLE or sc is None:
+        return []
+    try:
+        speakers = sc.all_speakers()
+    except Exception as e:
+        _audio_set_error(f"list_loopback_speakers_failed: {e}")
+        return []
+
+    rows = []
+    for sp in speakers:
+        try:
+            channels = int(getattr(sp, "channels", 0) or 0)
+        except Exception:
+            channels = 0
+        rows.append({
+            "id": str(getattr(sp, "id", "")),
+            "name": str(getattr(sp, "name", "")),
+            "channels": max(1, channels),
+        })
+    return rows
+
+
+def _audio_select_loopback_speaker(speakers):
+    if not speakers:
+        raise RuntimeError("no_loopback_speaker")
+
+    hint = (audio_device_name or "").strip().lower()
+    default_speaker_id = ""
+    try:
+        if SOUNDCARD_AVAILABLE and sc is not None and hasattr(sc, "default_speaker"):
+            default_speaker = sc.default_speaker()
+            default_speaker_id = str(getattr(default_speaker, "id", "") or "")
+    except Exception:
+        default_speaker_id = ""
+
+    def _score(sp):
+        name = sp["name"].lower()
+        score = 0
+        if "cable input" in name:
+            score += 800
+        if "vb-audio" in name or "vb cable" in name or "cable" in name:
+            score += 300
+        if "speaker" in name or "speakers" in name:
+            score += 120
+        if "headphone" in name or "headset" in name:
+            score += 80
+        if "virtual" in name or "todesk" in name:
+            score -= 120
+        if default_speaker_id and str(sp.get("id", "")) == default_speaker_id:
+            score += 220
+        score += min(int(sp.get("channels", 0) or 0), 2) * 8
+        return score
+
+    matched = []
+    for sp in speakers:
+        name = sp["name"].lower()
+        if hint and hint not in name:
+            continue
+        matched.append((_score(sp), sp))
+
+    if hint and not matched:
+        _audio_set_error(f"loopback_speaker_hint_not_found_fallback: hint={audio_device_name}")
+
+    if not matched:
+        for sp in speakers:
+            matched.append((_score(sp), sp))
+
+    matched.sort(key=lambda item: item[0], reverse=True)
+    return matched[0][1]
+
+
+def _audio_rank_loopback_output_devices(devices):
+    if not devices:
+        return []
+
+    hint = (audio_device_name or "").strip().lower()
+    default_out = None
+    try:
+        default_pair = sd.default.device if sd is not None else None
+        if isinstance(default_pair, (list, tuple)) and len(default_pair) >= 2:
+            default_out = int(default_pair[1])
+    except Exception:
+        default_out = None
+
+    def _score_device(dev):
+        name = dev["name"].lower()
+        score = 0
+        # For VB-CABLE loopback on playback side, device name is usually "CABLE Input".
+        if "cable input" in name:
+            score += 800
+        if "vb-audio" in name or "vb cable" in name or "cable" in name:
+            score += 300
+
+        loopback_hint_tokens = (
+            "speaker",
+            "speakers",
+            "headphone",
+            "headset",
+            "output",
+            "\u626c\u58f0\u5668",
+            "\u8033\u673a",
+        )
+        if any(tok in name for tok in loopback_hint_tokens):
+            score += 120
+
+        if default_out is not None and int(dev.get("index", -1)) == default_out:
+            score += 180
+
+        score += min(int(dev.get("max_output_channels", 0) or 0), 2) * 8
+        if float(dev.get("default_samplerate", 0.0) or 0.0) >= 48000.0:
+            score += 15
+        return score
+
+    matched = []
+    for dev in devices:
+        name = dev["name"].lower()
+        if hint and hint not in name:
+            continue
+        matched.append((_score_device(dev), dev))
+
+    if hint and not matched:
+        _audio_set_error(f"loopback_hint_not_found_fallback: hint={audio_device_name}")
+
+    if not matched:
+        for dev in devices:
+            matched.append((_score_device(dev), dev))
+
+    matched.sort(key=lambda item: item[0], reverse=True)
+    return [dev for _, dev in matched]
 
 
 def is_running_as_admin():
@@ -683,98 +868,181 @@ if WEBRTC_AVAILABLE:
             self._queue = queue.Queue(maxsize=240)
             self._pending = np.zeros((0, self._channels), dtype=np.int16)
             self._stream = None
+            self._loopback_cm = None
+            self._loopback_rec = None
             self._pts = 0
             self._wall_start = None
             self._closed = False
 
-        def _ensure_capture(self):
-            if self._stream is not None:
-                return
-            if not audio_enabled:
-                raise RuntimeError("audio_disabled")
-            if not SOUNDDEVICE_AVAILABLE or sd is None:
-                raise RuntimeError("sounddevice_unavailable")
+        def _try_start_soundcard_loopback(self):
+            if not (audio_prefer_wasapi_loopback and SOUNDCARD_AVAILABLE and sc is not None):
+                return False
 
-            devices = _audio_list_input_devices()
-            try:
-                candidates = _audio_rank_input_devices(devices)
-            except Exception as e:
-                _audio_set_error(f"select_input_device_failed: {e}")
-                raise
+            speakers = _audio_list_loopback_speakers()
+            if not speakers:
+                return False
 
-            last_start_error = None
-            for selected in candidates:
-                selected_channels = min(self._channels, int(selected["max_input_channels"]))
-                if selected_channels < 1:
-                    continue
-                self._channels = selected_channels
-                self._pending = np.zeros((0, self._channels), dtype=np.int16)
+            selected = _audio_select_loopback_speaker(speakers)
+            selected_channels = min(self._channels, int(selected.get("channels", 2) or 2))
+            selected_channels = max(1, selected_channels)
 
-                def _callback(indata, frames, time_info, status):
-                    if self._closed:
-                        return
-                    if status:
-                        _audio_inc("discontinuities", 1)
-                        _audio_set_error(f"callback_status: {status}")
+            rate_candidates = [int(self._sample_rate)]
+            # Typical stable fallback rates.
+            for r in (48000, 44100):
+                if r not in rate_candidates:
+                    rate_candidates.append(r)
 
-                    try:
-                        pcm = np.asarray(indata, dtype=np.float32)
-                        if pcm.ndim == 1:
-                            pcm = pcm.reshape(-1, 1)
-                        if pcm.shape[1] < self._channels:
-                            pad = np.zeros((pcm.shape[0], self._channels - pcm.shape[1]), dtype=np.float32)
-                            pcm = np.hstack([pcm, pad])
-                        elif pcm.shape[1] > self._channels:
-                            pcm = pcm[:, :self._channels]
-
-                        pcm = np.clip(pcm, -1.0, 1.0)
-                        int16_pcm = (pcm * 32767.0).astype(np.int16, copy=False)
-                    except Exception as e:
-                        _audio_set_error(f"callback_convert_failed: {e}")
-                        return
-
-                    try:
-                        self._queue.put_nowait(int16_pcm.copy())
-                    except queue.Full:
-                        try:
-                            self._queue.get_nowait()
-                        except queue.Empty:
-                            pass
-                        try:
-                            self._queue.put_nowait(int16_pcm.copy())
-                        except Exception:
-                            pass
-                        _audio_inc("dropped_frames", 1)
-
+            last_error = None
+            for try_rate in rate_candidates:
                 try:
-                    self._stream = sd.InputStream(
+                    speaker_id = str(selected.get("id", ""))
+                    mic = sc.get_microphone(id=speaker_id, include_loopback=True)
+                    self._sample_rate = int(try_rate)
+                    self._channels = int(selected_channels)
+                    self._frame_samples = max(80, int(self._sample_rate * audio_frame_ms / 1000))
+                    self._pending = np.zeros((0, self._channels), dtype=np.int16)
+
+                    self._loopback_cm = mic.recorder(
                         samplerate=self._sample_rate,
-                        blocksize=self._frame_samples,
                         channels=self._channels,
-                        dtype="float32",
-                        device=int(selected["index"]),
-                        callback=_callback,
+                        blocksize=self._frame_samples,
                     )
-                    self._stream.start()
+                    self._loopback_rec = self._loopback_cm.__enter__()
                 except Exception as e:
-                    last_start_error = e
-                    self._stream = None
+                    last_error = e
+                    self._loopback_cm = None
+                    self._loopback_rec = None
                     continue
 
                 _audio_set_status(
+                    capture_mode="soundcard_loopback",
                     capture_running=True,
                     selected_device=selected["name"],
-                    device_index=int(selected["index"]),
+                    device_index=None,
                     channels=int(self._channels),
                     sample_rate=int(self._sample_rate),
                     frame_samples=int(self._frame_samples),
                     last_error="",
                 )
                 print(
-                    f"[Audio] capture ready: device={selected['name']}, "
+                    f"[Audio] capture ready: mode=soundcard_loopback, device={selected['name']}, "
                     f"rate={self._sample_rate}, ch={self._channels}, frame={self._frame_samples}"
                 )
+                return True
+
+            _audio_set_error(f"soundcard_loopback_start_failed: {last_error}")
+            return False
+
+        def _ensure_capture(self):
+            if self._stream is not None or self._loopback_rec is not None:
                 return
+            if not audio_enabled:
+                raise RuntimeError("audio_disabled")
+
+            # Preferred path: speaker loopback (works even when local playback is silent).
+            if self._try_start_soundcard_loopback():
+                return
+
+            if not SOUNDDEVICE_AVAILABLE or sd is None:
+                raise RuntimeError("sounddevice_unavailable")
+
+            input_devices = _audio_list_input_devices()
+            try:
+                input_candidates = _audio_rank_input_devices(input_devices)
+            except Exception as e:
+                _audio_set_error(f"select_input_device_failed: {e}")
+                raise
+
+            candidates = []
+            for dev in input_candidates:
+                candidates.append(("input", dev))
+
+            last_start_error = None
+            for capture_mode, selected in candidates:
+                max_ch = int(selected.get("max_input_channels", 0) or 0)
+
+                selected_channels = min(self._channels, max_ch)
+                if selected_channels < 1:
+                    continue
+
+                rate_candidates = [int(self._sample_rate)]
+                default_rate = int(float(selected.get("default_samplerate", 0.0) or 0.0))
+                if default_rate > 0 and default_rate not in rate_candidates:
+                    rate_candidates.append(default_rate)
+
+                for try_rate in rate_candidates:
+                    self._sample_rate = int(try_rate)
+                    self._frame_samples = max(80, int(self._sample_rate * audio_frame_ms / 1000))
+                    self._channels = selected_channels
+                    self._pending = np.zeros((0, self._channels), dtype=np.int16)
+
+                    def _callback(indata, frames, time_info, status):
+                        if self._closed:
+                            return
+                        if status:
+                            _audio_inc("discontinuities", 1)
+                            _audio_set_error(f"callback_status: {status}")
+
+                        try:
+                            pcm = np.asarray(indata, dtype=np.float32)
+                            if pcm.ndim == 1:
+                                pcm = pcm.reshape(-1, 1)
+                            if pcm.shape[1] < self._channels:
+                                pad = np.zeros((pcm.shape[0], self._channels - pcm.shape[1]), dtype=np.float32)
+                                pcm = np.hstack([pcm, pad])
+                            elif pcm.shape[1] > self._channels:
+                                pcm = pcm[:, :self._channels]
+
+                            pcm = np.clip(pcm, -1.0, 1.0)
+                            int16_pcm = (pcm * 32767.0).astype(np.int16, copy=False)
+                        except Exception as e:
+                            _audio_set_error(f"callback_convert_failed: {e}")
+                            return
+
+                        try:
+                            self._queue.put_nowait(int16_pcm.copy())
+                        except queue.Full:
+                            try:
+                                self._queue.get_nowait()
+                            except queue.Empty:
+                                pass
+                            try:
+                                self._queue.put_nowait(int16_pcm.copy())
+                            except Exception:
+                                pass
+                            _audio_inc("dropped_frames", 1)
+
+                    try:
+                        stream_kwargs = {
+                            "samplerate": self._sample_rate,
+                            "blocksize": self._frame_samples,
+                            "channels": self._channels,
+                            "dtype": "float32",
+                            "device": int(selected["index"]),
+                            "callback": _callback,
+                        }
+                        self._stream = sd.InputStream(**stream_kwargs)
+                        self._stream.start()
+                    except Exception as e:
+                        last_start_error = e
+                        self._stream = None
+                        continue
+
+                    _audio_set_status(
+                        capture_mode=capture_mode,
+                        capture_running=True,
+                        selected_device=selected["name"],
+                        device_index=int(selected["index"]),
+                        channels=int(self._channels),
+                        sample_rate=int(self._sample_rate),
+                        frame_samples=int(self._frame_samples),
+                        last_error="",
+                    )
+                    print(
+                        f"[Audio] capture ready: mode={capture_mode}, device={selected['name']}, "
+                        f"rate={self._sample_rate}, ch={self._channels}, frame={self._frame_samples}"
+                    )
+                    return
 
             _audio_set_error(f"input_stream_start_failed: {last_start_error}")
             raise RuntimeError(f"input_stream_start_failed: {last_start_error}")
@@ -812,6 +1080,34 @@ if WEBRTC_AVAILABLE:
 
             frame_data = self._pop_frame()
             while frame_data is None:
+                if self._loopback_rec is not None:
+                    try:
+                        chunk = await asyncio.to_thread(
+                            self._loopback_rec.record,
+                            numframes=self._frame_samples,
+                        )
+                        pcm = np.asarray(chunk, dtype=np.float32)
+                        if pcm.ndim == 1:
+                            pcm = pcm.reshape(-1, 1)
+                        if pcm.shape[1] > self._channels:
+                            pcm = pcm[:, :self._channels]
+                        elif pcm.shape[1] < self._channels:
+                            pad = np.zeros((pcm.shape[0], self._channels - pcm.shape[1]), dtype=np.float32)
+                            pcm = np.hstack([pcm, pad])
+                        pcm = np.clip(pcm, -1.0, 1.0)
+                        frame_data = (pcm * 32767.0).astype(np.int16, copy=False)
+                        if frame_data.shape[0] < self._frame_samples:
+                            pad = np.zeros((self._frame_samples - frame_data.shape[0], self._channels), dtype=np.int16)
+                            frame_data = np.vstack([frame_data, pad])
+                        elif frame_data.shape[0] > self._frame_samples:
+                            frame_data = frame_data[:self._frame_samples, :]
+                        break
+                    except Exception as e:
+                        frame_data = np.zeros((self._frame_samples, self._channels), dtype=np.int16)
+                        _audio_inc("dropped_frames", 1)
+                        _audio_set_error(f"loopback_record_failed_fill_silence: {e}")
+                        break
+
                 try:
                     chunk = await asyncio.to_thread(self._queue.get, True, 1.0)
                     self._append_chunk(chunk)
@@ -848,6 +1144,9 @@ if WEBRTC_AVAILABLE:
             self._closed = True
             stream = self._stream
             self._stream = None
+            loopback_cm = self._loopback_cm
+            self._loopback_cm = None
+            self._loopback_rec = None
             if stream is not None:
                 try:
                     stream.stop()
@@ -857,7 +1156,12 @@ if WEBRTC_AVAILABLE:
                     stream.close()
                 except Exception:
                     pass
-            _audio_set_status(capture_running=False)
+            if loopback_cm is not None:
+                try:
+                    loopback_cm.__exit__(None, None, None)
+                except Exception:
+                    pass
+            _audio_set_status(capture_running=False, capture_mode="")
             super().stop()
 
     class ScreenVideoTrack(VideoStreamTrack):
@@ -1003,18 +1307,24 @@ def server_info():
 @app.route('/audio_info')
 def audio_info():
     devices = _audio_list_input_devices()
+    loopback_speakers = _audio_list_loopback_speakers()
+    loopback_outputs = _audio_list_wasapi_output_devices()
     status = _audio_snapshot()
     return {
         'enabled': bool(audio_enabled),
         'webrtc_available': bool(WEBRTC_AVAILABLE),
         'sounddevice_available': bool(SOUNDDEVICE_AVAILABLE),
+        'soundcard_available': bool(SOUNDCARD_AVAILABLE),
         'device_name_hint': audio_device_name,
+        'prefer_wasapi_loopback': bool(audio_prefer_wasapi_loopback),
         'sample_rate': int(audio_sample_rate),
         'channels': int(audio_channels),
         'frame_ms': int(audio_frame_ms),
         'frame_samples': int(audio_frame_samples),
         'status': status,
         'devices': devices,
+        'loopback_speakers': loopback_speakers,
+        'loopback_outputs': loopback_outputs,
     }
 
 
@@ -1092,11 +1402,11 @@ def ensure_webrtc_runtime():
     if audio_enabled and (not SOUNDDEVICE_AVAILABLE or sd is None):
         _audio_set_error("sounddevice_unavailable")
 
-    if not dxgi_capture_enabled:
-        dxgi_capture_enabled = True
+    # Keep current capture mode; do not force-enable DXGI for WebRTC runtime.
+    # Default MSS is more stable on some systems.
+    if dxgi_capture_enabled and dxgi_camera is None:
         try:
-            if dxgi_camera is None:
-                init_dxgi_camera()
+            init_dxgi_camera()
         except Exception:
             pass
 
