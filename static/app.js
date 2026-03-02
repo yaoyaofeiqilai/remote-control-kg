@@ -242,12 +242,6 @@ function scheduleWebRTCRestart(reason, delayMs = 1200) {
     }, nextDelay);
 }
 
-function startMJPEG() {
-    // MJPEG fallback disabled: keep the image element hidden.
-    stopMJPEG();
-    state.webrtc.using = false;
-}
-
 function stopWebRTC() {
     if (state.webrtc.freezeWatchdogTimer) {
         clearInterval(state.webrtc.freezeWatchdogTimer);

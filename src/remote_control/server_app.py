@@ -7,7 +7,6 @@ Provides screen capture and input control over web.
 import asyncio
 import base64
 import ctypes
-import io
 import json
 import os
 import queue
@@ -94,7 +93,7 @@ VENDOR_DIR = os.path.join(PROJECT_ROOT, "vendor", "py312")
 if os.path.isdir(VENDOR_DIR) and VENDOR_DIR not in sys.path:
     sys.path.insert(0, VENDOR_DIR)
 
-from flask import Flask, Response, render_template, request
+from flask import Flask, render_template, request
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 import pyautogui
@@ -161,7 +160,6 @@ pyautogui.PAUSE = 0.01
 
 # Cleaned garbled comment.
 connected_clients = 0
-screen_capture_running = False
 quality = 60  # Cleaned garbled comment.
 fps = 30  # Cleaned garbled comment.
 
@@ -172,7 +170,6 @@ webrtc_scale = _env_float("RC_WEBRTC_SCALE", 1.0, 0.25, 1.0)
 webrtc_max_width = _env_int("RC_WEBRTC_MAX_WIDTH", int(_screen_size.width), 320, 7680)
 webrtc_max_height = _env_int("RC_WEBRTC_MAX_HEIGHT", int(_screen_size.height), 240, 4320)
 capture_all_monitors = _env_flag("RC_CAPTURE_ALL_MONITORS", False)
-mjpeg_enabled = _env_flag("RC_MJPEG_ENABLED", False)
 webrtc_bitrate_auto = _env_flag("RC_WEBRTC_AUTO_BITRATE", True)
 webrtc_target_bitrate_kbps = _env_int("RC_WEBRTC_BITRATE_KBPS", 12000, 500, 60000)
 webrtc_peers = {}
@@ -1311,95 +1308,10 @@ if WEBRTC_AVAILABLE:
             return vf
 
 
-def screen_to_bytes(img, quality=60):
-    """Encode PIL image to JPEG bytes."""
-    buffer = io.BytesIO()
-    img.save(buffer, format='JPEG', quality=quality, optimize=True)
-    return buffer.getvalue()
-
-
-def generate_video_stream():
-    """Generate optimized MJPEG video stream."""
-    global screen_capture_running, quality, fps
-    screen_capture_running = True
-    last_error_time = 0
-    error_count = 0
-    last_img = None
-
-    while screen_capture_running:
-        try:
-            loop_start = time.time()
-
-            # Cleaned garbled comment.
-            img = capture_screen()
-            if img is None:
-                img = last_img
-            if img is None:
-                img = Image.new('RGB', (1280, 720), color=(0, 0, 0))
-            last_img = img
-
-            # Cleaned garbled comment.
-            buffer = io.BytesIO()
-            img.save(buffer, format='JPEG', quality=quality, optimize=False, progressive=False)
-            frame = buffer.getvalue()
-
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n'
-                   b'Content-Length: ' + str(len(frame)).encode() + b'\r\n'
-                   b'\r\n' + frame + b'\r\n')
-
-            # Cleaned garbled comment.
-            error_count = 0
-
-            # Cleaned garbled comment.
-            elapsed = time.time() - loop_start
-            target_interval = 1.0 / fps
-            sleep_time = target_interval - elapsed
-
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-            elif sleep_time < -0.05:  # Cleaned garbled comment.
-                pass  # Cleaned garbled comment.
-
-        except GeneratorExit:
-            # Cleaned garbled comment.
-            break
-        except Exception as e:
-            error_count += 1
-            now = time.time()
-            if now - last_error_time > 5:  # Cleaned garbled comment.
-                print(f"[Video Stream] error ({error_count}): {e}")
-                last_error_time = now
-                error_count = 0
-            time.sleep(0.05)
-
-
-# Cleaned garbled comment.
-
 @app.route('/')
 def index():
     """Render control page."""
     return render_template('index.html')
-
-
-@app.route('/video')
-def video_feed():
-    """MJPEG video endpoint."""
-    if not mjpeg_enabled:
-        return {
-            'enabled': False,
-            'error': 'mjpeg_disabled',
-            'message': 'MJPEG disabled, use WebRTC transport',
-        }, 410
-    return Response(
-        generate_video_stream(),
-        mimetype='multipart/x-mixed-replace; boundary=frame',
-        headers={
-            'Cache-Control': 'no-cache, no-store, must-revalidate',
-            'Pragma': 'no-cache',
-            'Expires': '0'
-        }
-    )
 
 
 @app.route('/api/info')
@@ -1412,7 +1324,7 @@ def server_info():
         'screen_size': pyautogui.size(),
         'quality': quality,
         'fps': fps,
-        'mjpeg_enabled': bool(mjpeg_enabled),
+        'mjpeg_enabled': False,
         'webrtc_fps': webrtc_target_fps,
         'webrtc_scale': webrtc_scale,
         'webrtc_bitrate_kbps': webrtc_target_bitrate_kbps,
