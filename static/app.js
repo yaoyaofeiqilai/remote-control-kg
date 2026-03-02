@@ -332,6 +332,17 @@ function startWebRTCStats() {
             if (videoInbound) {
                 const nowTs = videoInbound.timestamp || performance.now();
                 const bytes = videoInbound.bytesReceived || 0;
+                let codecMime = '';
+                let decoderImpl = '';
+                let powerEfficient = false;
+                if (videoInbound.codecId && typeof stats.get === 'function') {
+                    const codecReport = stats.get(videoInbound.codecId);
+                    if (codecReport) {
+                        codecMime = codecReport.mimeType || codecReport.mime_type || '';
+                    }
+                }
+                decoderImpl = videoInbound.decoderImplementation || '';
+                powerEfficient = !!videoInbound.powerEfficientDecoder;
                 if (bytes > state.webrtcStats.lastBytes) {
                     state.webrtc.lastFrameAt = Date.now();
                 }
@@ -371,6 +382,9 @@ function startWebRTCStats() {
                     frames_per_second: state.webrtcStats.framesPerSecond,
                     decode_ms: state.webrtcStats.decodeMs || 0,
                     jitter_ms: state.webrtcStats.jitterMs,
+                    codec: codecMime,
+                    decoder_impl: decoderImpl,
+                    power_efficient: powerEfficient,
                 });
             }
 

@@ -221,6 +221,25 @@ capture_all_monitors = _env_flag("RC_CAPTURE_ALL_MONITORS", False)
 webrtc_bitrate_auto = _env_flag("RC_WEBRTC_AUTO_BITRATE", True)
 webrtc_target_bitrate_kbps = _env_int("RC_WEBRTC_BITRATE_KBPS", 24000, 500, 80000)
 webrtc_bitrate_scale = _env_float("RC_WEBRTC_BITRATE_SCALE", 2.0, 0.5, 3.0)
+webrtc_force_h264_only = _env_flag("RC_WEBRTC_FORCE_H264_ONLY", True)
+webrtc_h264_conservative_level = _env_flag("RC_WEBRTC_H264_CONSERVATIVE_LEVEL", False)
+webrtc_h264_profile_prefix = (os.getenv("RC_WEBRTC_H264_PROFILE_PREFIX", "42e0") or "42e0").strip().lower()
+if len(webrtc_h264_profile_prefix) != 4 or any(ch not in "0123456789abcdef" for ch in webrtc_h264_profile_prefix):
+    webrtc_h264_profile_prefix = "42e0"
+last_h264_signal = {
+    "profile_level_id": "",
+    "level_idc": 0,
+    "max_fs": 0,
+    "max_mbps": 0,
+    "signal_fps": 0,
+    "target_w": 0,
+    "target_h": 0,
+}
+last_video_codec_policy = {
+    "h264_only": bool(webrtc_force_h264_only),
+    "video_pt_count": 0,
+    "h264_pt_count": 0,
+}
 webrtc_peers = {}
 webrtc_audio_tracks = {}
 webrtc_loop = None
@@ -1553,6 +1572,14 @@ def server_info():
         'webrtc_scale': webrtc_scale,
         'webrtc_bitrate_kbps': webrtc_target_bitrate_kbps,
         'webrtc_bitrate_scale': float(webrtc_bitrate_scale),
+        'webrtc_force_h264_only': bool(webrtc_force_h264_only),
+        'webrtc_video_pt_count': int(last_video_codec_policy.get('video_pt_count', 0) or 0),
+        'webrtc_h264_pt_count': int(last_video_codec_policy.get('h264_pt_count', 0) or 0),
+        'webrtc_h264_conservative_level': bool(webrtc_h264_conservative_level),
+        'webrtc_h264_profile_level_id': str(last_h264_signal.get('profile_level_id', '') or ''),
+        'webrtc_h264_max_fs': int(last_h264_signal.get('max_fs', 0) or 0),
+        'webrtc_h264_max_mbps': int(last_h264_signal.get('max_mbps', 0) or 0),
+        'webrtc_h264_signal_fps': int(last_h264_signal.get('signal_fps', 0) or 0),
         'capture_fps': round(capture_fps, 1),
         'capture_all_monitors': bool(capture_all_monitors),
         'video_encoder_active': active_encoder,
@@ -1820,6 +1847,7 @@ def _h264_level_limits_for_target(target_w: int, target_h: int, target_fps: int)
 
 
 def _h264_munge_fmtp_line(line: str, target_fps: int) -> str:
+    global last_h264_signal
     try:
         screen = pyautogui.size()
         sw = int(screen.width)
@@ -1862,13 +1890,27 @@ def _h264_munge_fmtp_line(line: str, target_fps: int) -> str:
                 return
         params.append(f"{key}={value}")
 
-    # Keep profile-level-id conservative for mobile decoder compatibility.
-    # Real capability is carried by max-fs / max-mbps below.
-    signaled_level_idc = min(int(level_idc), 0x2A)  # up to Level 4.2
-    _set_param("profile-level-id", f"42e0{signaled_level_idc:02x}")
+    # Conservative profile-level-id capping can hard-limit decode FPS at high resolutions.
+    if webrtc_h264_conservative_level:
+        signaled_level_idc = min(int(level_idc), 0x2A)  # up to Level 4.2
+    else:
+        signaled_level_idc = int(level_idc)
+    profile_level_id = f"{webrtc_h264_profile_prefix}{signaled_level_idc:02x}"
+    _set_param("profile-level-id", profile_level_id)
 
     _set_param("max-fs", str(max_fs))
     _set_param("max-mbps", str(max_mbps))
+    _set_param("level-asymmetry-allowed", "1")
+    _set_param("packetization-mode", "1")
+    last_h264_signal = {
+        "profile_level_id": profile_level_id,
+        "level_idc": int(signaled_level_idc),
+        "max_fs": int(max_fs),
+        "max_mbps": int(max_mbps),
+        "signal_fps": int(signal_fps),
+        "target_w": int(target_w),
+        "target_h": int(target_h),
+    }
     return f"{head} {';'.join(params)}"
 
 
@@ -1929,6 +1971,114 @@ def _webrtc_munge_answer_sdp(sdp: str, bitrate_kbps: int, target_fps: int) -> st
         out.append(f"a=framerate:{sdp_fps_hint}")
 
     sep = "\r\n" if "\r\n" in sdp else "\n"
+    return sep.join(out) + sep
+
+
+def _webrtc_force_h264_video_only(sdp: str) -> str:
+    """Keep only H264 (and its RTX payloads) in video m-sections."""
+    global last_video_codec_policy
+    sep = "\r\n" if "\r\n" in sdp else "\n"
+    lines = sdp.splitlines()
+    if not lines:
+        return sdp
+
+    out = []
+    i = 0
+    total_video_pts = 0
+    total_h264_pts = 0
+    changed = False
+
+    while i < len(lines):
+        line = lines[i]
+        if not line.startswith("m="):
+            out.append(line)
+            i += 1
+            continue
+
+        j = i + 1
+        while j < len(lines) and not lines[j].startswith("m="):
+            j += 1
+        section = lines[i:j]
+        mline = section[0]
+
+        if not mline.startswith("m=video "):
+            out.extend(section)
+            i = j
+            continue
+
+        parts = mline.split()
+        if len(parts) < 4:
+            out.extend(section)
+            i = j
+            continue
+
+        pts = parts[3:]
+        total_video_pts += len(pts)
+
+        codec_by_pt = {}
+        apt_by_pt = {}
+        for sline in section[1:]:
+            lower = sline.lower()
+            if lower.startswith("a=rtpmap:"):
+                body = sline[9:]
+                if " " not in body:
+                    continue
+                pt, spec = body.split(" ", 1)
+                codec_name = spec.split("/", 1)[0].strip().upper()
+                codec_by_pt[pt.strip()] = codec_name
+            elif lower.startswith("a=fmtp:"):
+                body = sline[7:]
+                if " " not in body:
+                    continue
+                pt, attrs = body.split(" ", 1)
+                pt = pt.strip()
+                for token in attrs.split(";"):
+                    tok = token.strip().lower()
+                    if tok.startswith("apt="):
+                        apt_by_pt[pt] = tok.split("=", 1)[1].strip()
+                        break
+
+        keep_h264 = [pt for pt in pts if codec_by_pt.get(pt, "") == "H264"]
+        if not keep_h264:
+            out.extend(section)
+            i = j
+            continue
+        total_h264_pts += len(keep_h264)
+
+        keep_set = set(keep_h264)
+        for pt in pts:
+            if codec_by_pt.get(pt, "") == "RTX" and apt_by_pt.get(pt, "") in keep_set:
+                keep_set.add(pt)
+        keep_ordered = [pt for pt in pts if pt in keep_set]
+        if not keep_ordered:
+            out.extend(section)
+            i = j
+            continue
+
+        new_mline = " ".join(parts[:3] + keep_ordered)
+        out.append(new_mline)
+        if new_mline != mline:
+            changed = True
+
+        for sline in section[1:]:
+            lower = sline.lower()
+            if lower.startswith("a=rtpmap:") or lower.startswith("a=fmtp:") or lower.startswith("a=rtcp-fb:"):
+                body = sline.split(":", 1)[1]
+                pt = body.split(" ", 1)[0].strip()
+                if pt not in keep_set:
+                    changed = True
+                    continue
+            out.append(sline)
+
+        i = j
+
+    last_video_codec_policy = {
+        "h264_only": True,
+        "video_pt_count": int(total_video_pts),
+        "h264_pt_count": int(total_h264_pts),
+    }
+    if not changed:
+        return sdp
     return sep.join(out) + sep
 
 
@@ -2001,6 +2151,8 @@ async def _webrtc_handle_offer(sid: str, offer_sdp: str, offer_type: str):
             bitrate_kbps=webrtc_target_bitrate_kbps,
             target_fps=webrtc_target_fps,
         )
+        if webrtc_force_h264_only:
+            answer_sdp = _webrtc_force_h264_video_only(answer_sdp)
         try:
             for _line in answer_sdp.splitlines():
                 _lower = _line.strip().lower()
@@ -2072,6 +2224,9 @@ def handle_video_client_stats(data):
         'frames_per_second': float(data.get('frames_per_second', 0.0) or 0.0),
         'decode_ms': float(data.get('decode_ms', 0.0) or 0.0),
         'jitter_ms': float(data.get('jitter_ms', 0.0) or 0.0),
+        'codec': str(data.get('codec', '') or ''),
+        'decoder_impl': str(data.get('decoder_impl', '') or ''),
+        'power_efficient': bool(data.get('power_efficient', False)),
         'sid': request.sid,
         'ts': time.time(),
     }
