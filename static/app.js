@@ -100,6 +100,32 @@ const state = {
     lastFpsUpdate: Date.now(),
 };
 
+let fpsEmitTimer = null;
+let lastSentFps = null;
+
+function sendFpsSetting(value, immediate = false) {
+    const v = parseInt(value, 10);
+    if (!Number.isFinite(v)) return;
+    const doSend = () => {
+        if (lastSentFps === v) return;
+        lastSentFps = v;
+        emit('set_fps', { fps: v });
+    };
+    if (immediate) {
+        if (fpsEmitTimer) {
+            clearTimeout(fpsEmitTimer);
+            fpsEmitTimer = null;
+        }
+        doSend();
+        return;
+    }
+    if (fpsEmitTimer) clearTimeout(fpsEmitTimer);
+    fpsEmitTimer = setTimeout(() => {
+        fpsEmitTimer = null;
+        doSend();
+    }, 120);
+}
+
 function isGamepadPointerActive() {
     return state.gamepadAltLocked || state.gamepadTabWheelActive;
 }
@@ -524,7 +550,7 @@ function initSocket() {
         }
         const fpsSlider = document.getElementById('fps-slider');
         if (fpsSlider) {
-            emit('set_fps', { fps: parseInt(fpsSlider.value) });
+            sendFpsSetting(fpsSlider.value, true);
         }
         const webrtcScaleSlider = document.getElementById('webrtc-scale-slider');
         if (webrtcScaleSlider) {
@@ -547,6 +573,7 @@ function initSocket() {
             }
             fpsSlider.value = String(v);
         }
+        lastSentFps = v;
         if (fpsValue) fpsValue.textContent = String(v);
     });
 
@@ -2038,9 +2065,13 @@ function initSettings() {
     const fpsSlider = document.getElementById('fps-slider');
     const fpsValue = document.getElementById('fps-value');
     fpsValue.textContent = fpsSlider.value;
+    lastSentFps = parseInt(fpsSlider.value, 10);
     fpsSlider.addEventListener('input', () => {
         fpsValue.textContent = fpsSlider.value;
-        emit('set_fps', { fps: parseInt(fpsSlider.value) });
+        sendFpsSetting(fpsSlider.value, false);
+    });
+    fpsSlider.addEventListener('change', () => {
+        sendFpsSetting(fpsSlider.value, true);
     });
 
     // 鼠标灵敏度滑块

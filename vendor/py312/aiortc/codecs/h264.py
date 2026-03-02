@@ -20,7 +20,7 @@ DEFAULT_BITRATE = 12000000  # 12 Mbps
 MIN_BITRATE = 2000000  # 2 Mbps
 MAX_BITRATE = 30000000  # 30 Mbps
 
-MAX_FRAME_RATE = 60
+MAX_FRAME_RATE = 120
 PACKET_MAX = 1300
 
 NAL_TYPE_FU_A = 28
@@ -133,12 +133,12 @@ def create_encoder_context(
     codec.framerate = fractions.Fraction(MAX_FRAME_RATE, 1)
     codec.time_base = fractions.Fraction(1, MAX_FRAME_RATE)
     options = {
-        "profile": "baseline",
         "tune": "zerolatency",
     }
     if codec_name == "libx264":
         options.update(
             {
+                "profile": "baseline",
                 "preset": "ultrafast",
                 "x264-params": (
                     f"keyint={MAX_FRAME_RATE}:min-keyint={MAX_FRAME_RATE}:"
@@ -147,6 +147,15 @@ def create_encoder_context(
                 ),
             }
         )
+    elif codec_name == "h264_mf":
+        # Media Foundation hardware path: keep low latency and stable cadence.
+        options = {
+            "g": str(MAX_FRAME_RATE),
+            "bf": "0",
+            "look_ahead": "0",
+            "scenario": "1",
+            "usage": "ultralowlatency",
+        }
     codec.options = options
     codec.open()
     return codec, codec_name == "h264_omx"
@@ -301,7 +310,7 @@ class H264Encoder(Encoder):
 
         if self.codec is None:
             last_error = None
-            for codec_name in ("h264_nvenc", "h264_qsv", "h264_amf", "h264_omx", "libx264"):
+            for codec_name in ("h264_nvenc", "h264_qsv", "h264_amf", "h264_mf", "h264_omx", "libx264"):
                 try:
                     self.codec, self.codec_buffering = create_encoder_context(
                         codec_name, frame.width, frame.height, bitrate=self.target_bitrate

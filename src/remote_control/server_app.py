@@ -169,7 +169,7 @@ pyautogui.PAUSE = 0.01
 
 # Cleaned garbled comment.
 connected_clients = 0
-quality = 60  # Cleaned garbled comment.
+quality = 80  # Cleaned garbled comment.
 fps = 60  # Cleaned garbled comment.
 
 webrtc_enabled = True
@@ -186,7 +186,7 @@ webrtc_max_height = _env_int("RC_WEBRTC_MAX_HEIGHT", int(_screen_size.height), 2
 capture_all_monitors = _env_flag("RC_CAPTURE_ALL_MONITORS", False)
 webrtc_bitrate_auto = _env_flag("RC_WEBRTC_AUTO_BITRATE", True)
 webrtc_target_bitrate_kbps = _env_int("RC_WEBRTC_BITRATE_KBPS", 12000, 500, 60000)
-webrtc_bitrate_scale = _env_float("RC_WEBRTC_BITRATE_SCALE", 1.15, 0.5, 3.0)
+webrtc_bitrate_scale = _env_float("RC_WEBRTC_BITRATE_SCALE", 1.25, 0.5, 3.0)
 webrtc_peers = {}
 webrtc_audio_tracks = {}
 webrtc_loop = None
@@ -237,7 +237,7 @@ def _probe_video_encoders():
         "preferred": "libx264",
         "active": "",
     }
-    candidates = ("h264_nvenc", "h264_qsv", "h264_amf", "h264_omx", "libx264")
+    candidates = ("h264_nvenc", "h264_qsv", "h264_amf", "h264_mf", "h264_omx", "libx264")
     if not AV_MODULE_AVAILABLE or av_mod is None:
         return result
 
@@ -1422,7 +1422,9 @@ def server_info():
         'webrtc_bitrate_scale': float(webrtc_bitrate_scale),
         'capture_fps': round(capture_fps, 1),
         'capture_all_monitors': bool(capture_all_monitors),
-        'video_encoder_active': active_encoder or video_encoder_status.get('preferred', 'libx264'),
+        'video_encoder_active': active_encoder,
+        'video_encoder_preferred': video_encoder_status.get('preferred', 'libx264'),
+        'video_encoder_effective': active_encoder or video_encoder_status.get('preferred', 'libx264'),
         'video_encoders_available': list(video_encoder_status.get('available', [])),
         'video_hw_encoders_available': list(video_encoder_status.get('hardware_available', [])),
     }
@@ -1620,7 +1622,8 @@ def _webrtc_apply_codec_preferences(pc: RTCPeerConnection):
 def _webrtc_munge_answer_sdp(sdp: str, bitrate_kbps: int, target_fps: int) -> str:
     """Inject video bitrate/fps hints into SDP answer."""
     bitrate_kbps = max(500, min(60000, int(bitrate_kbps)))
-    target_fps = max(15, min(int(webrtc_fps_max), int(target_fps)))
+    # Keep SDP framerate hint aligned with codec pipeline capability.
+    target_fps = max(15, min(120, int(target_fps)))
 
     lines = sdp.splitlines()
     out = []
@@ -2281,19 +2284,13 @@ def handle_set_fps(data, sid=None):
     except Exception:
         requested_fps = int(webrtc_target_fps)
     new_fps = max(15, min(int(webrtc_fps_max), requested_fps))
+    unchanged = (int(fps) == int(new_fps) and int(webrtc_target_fps) == int(new_fps))
     fps = new_fps
     webrtc_target_fps = new_fps
 
-    # Restart DXGI stream to apply target_fps for dxcam.start(...).
-    if dxgi_capture_enabled and dxgi_camera is not None:
-        try:
-            release_dxgi_camera()
-            init_dxgi_camera()
-        except Exception:
-            pass
-
     bitrate_kbps = _sync_webrtc_bitrate_target()
-    print(f"[Settings] FPS updated: {fps}, webrtc_bitrate={bitrate_kbps}kbps")
+    if not unchanged:
+        print(f"[Settings] FPS updated: {fps}, webrtc_bitrate={bitrate_kbps}kbps")
     emit('fps_updated', {
         'fps': fps,
         'webrtc_fps': webrtc_target_fps,
