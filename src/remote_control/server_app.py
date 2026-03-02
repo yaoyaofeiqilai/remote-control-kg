@@ -64,7 +64,40 @@ def _env_float(name, default, minimum, maximum):
 
 # Cleaned garbled comment.
 DXCAM_AVAILABLE = False
+DXCAM_PATCHED = False
 dxcam = None
+
+
+def _patch_dxcam_runtime(dx_module):
+    """Patch known dxcam teardown bug when init fails partway."""
+    global DXCAM_PATCHED
+    if DXCAM_PATCHED:
+        return
+
+    camera_cls = getattr(dx_module, "DXCamera", None)
+    if camera_cls is None:
+        DXCAM_PATCHED = True
+        return
+
+    original_stop = getattr(camera_cls, "stop", None)
+    if callable(original_stop):
+        def _safe_stop(self, *args, **kwargs):
+            if not hasattr(self, "is_capturing"):
+                try:
+                    setattr(self, "is_capturing", False)
+                except Exception:
+                    pass
+            try:
+                return original_stop(self, *args, **kwargs)
+            except AttributeError as e:
+                if "is_capturing" in str(e):
+                    return None
+                raise
+
+        camera_cls.stop = _safe_stop
+
+    DXCAM_PATCHED = True
+
 
 def load_dxcam():
     """Lazy-load dxcam to avoid startup-time import crashes."""
@@ -73,6 +106,7 @@ def load_dxcam():
         import warnings
         warnings.filterwarnings('ignore')
         import dxcam as dx
+        _patch_dxcam_runtime(dx)
         dxcam = dx
         DXCAM_AVAILABLE = True
         return True
@@ -169,7 +203,7 @@ pyautogui.PAUSE = 0.01
 
 # Cleaned garbled comment.
 connected_clients = 0
-quality = 80  # Cleaned garbled comment.
+quality = _env_int("RC_QUALITY", 95, 10, 95)  # Cleaned garbled comment.
 fps = 60  # Cleaned garbled comment.
 
 webrtc_enabled = True
@@ -185,8 +219,8 @@ webrtc_max_width = _env_int("RC_WEBRTC_MAX_WIDTH", int(_screen_size.width), 320,
 webrtc_max_height = _env_int("RC_WEBRTC_MAX_HEIGHT", int(_screen_size.height), 240, 4320)
 capture_all_monitors = _env_flag("RC_CAPTURE_ALL_MONITORS", False)
 webrtc_bitrate_auto = _env_flag("RC_WEBRTC_AUTO_BITRATE", True)
-webrtc_target_bitrate_kbps = _env_int("RC_WEBRTC_BITRATE_KBPS", 12000, 500, 60000)
-webrtc_bitrate_scale = _env_float("RC_WEBRTC_BITRATE_SCALE", 1.25, 0.5, 3.0)
+webrtc_target_bitrate_kbps = _env_int("RC_WEBRTC_BITRATE_KBPS", 24000, 500, 80000)
+webrtc_bitrate_scale = _env_float("RC_WEBRTC_BITRATE_SCALE", 2.0, 0.5, 3.0)
 webrtc_peers = {}
 webrtc_audio_tracks = {}
 webrtc_loop = None
@@ -214,8 +248,15 @@ def _estimate_webrtc_bitrate_kbps():
 
     # 10..95 => 0.4..1.5
     quality_factor = 0.4 + ((quality_now - 10) / 85.0) * 1.1
-    kbps = int(mpix_per_s * 80.0 * quality_factor * float(webrtc_bitrate_scale))
-    return max(800, min(60000, kbps))
+    kbps = int(mpix_per_s * 120.0 * quality_factor * float(webrtc_bitrate_scale))
+
+    # High-res / high-fps mode should aggressively reserve bandwidth to keep cadence.
+    if target_w >= 2200 and target_h >= 1300 and fps_now >= 60 and scale >= 0.95:
+        kbps = max(kbps, 50000)
+        if quality_now >= 90:
+            kbps = max(kbps, 60000)
+
+    return max(1200, min(80000, kbps))
 
 
 def _sync_webrtc_bitrate_target():
@@ -304,12 +345,19 @@ audio_status = {
 if audio_enabled and not SOUNDDEVICE_AVAILABLE:
     audio_status["last_error"] = "sounddevice_unavailable"
 
+video_status_lock = threading.Lock()
+video_status = {
+    "client_stats": {},
+}
+
 # Cleaned garbled comment.
 dxgi_camera = None
 dxgi_capture_enabled = webrtc_capture_backend in ("auto", "dxgi")  # Cleaned garbled comment.
+dxgi_capture_target_fps = _env_int("RC_DXGI_CAPTURE_FPS", 120, 30, 240)
 dxgi_lock = threading.RLock()
 dxgi_failure_count = 0
 dxgi_retry_after = 0.0
+dxgi_hard_disabled = False
 
 mss_local = threading.local()
 
@@ -350,6 +398,16 @@ def _audio_set_error(message):
 def _audio_snapshot():
     with audio_status_lock:
         return dict(audio_status)
+
+
+def _video_set_client_stats(stats):
+    with video_status_lock:
+        video_status["client_stats"] = dict(stats or {})
+
+
+def _video_snapshot():
+    with video_status_lock:
+        return dict(video_status)
 
 
 def _audio_list_input_devices():
@@ -646,12 +704,35 @@ if not is_running_as_admin():
     print("[Hint] Not running as administrator: input injection on elevated windows may fail.")
     print("[Hint] Please use start_admin.bat to launch in administrator mode.")
 
+
+def _is_dxgi_unsupported_error(err):
+    text = str(err or "")
+    lowered = text.lower()
+    if (
+        "unsupported" in lowered
+        or "not supported" in lowered
+        or "feature level" in lowered
+        or "不受支持" in text
+    ):
+        return True
+    try:
+        first_arg = getattr(err, "args", [None])[0]
+        code = int(first_arg)
+        if code == -2005270524:
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def init_dxgi_camera():
     """Initialize DXGI camera."""
-    global dxgi_camera, dxcam, dxgi_failure_count, dxgi_retry_after
+    global dxgi_camera, dxcam, dxgi_failure_count, dxgi_retry_after, dxgi_capture_enabled, dxgi_hard_disabled
 
     # Cleaned garbled comment.
     if dxcam is None and not load_dxcam():
+        return False
+    if dxgi_hard_disabled:
         return False
 
     with dxgi_lock:
@@ -661,14 +742,22 @@ def init_dxgi_camera():
         try:
             # Cleaned garbled comment.
             try:
-                dxgi_camera = dxcam.create(output_color="RGB")
+                # BGRA is the native desktop surface format and avoids per-frame RGB slicing.
+                dxgi_camera = dxcam.create(output_color="BGRA")
             except TypeError:
                 dxgi_camera = dxcam.create()
             try:
                 if hasattr(dxgi_camera, "start"):
-                    dxgi_camera.start(target_fps=webrtc_target_fps)
-            except Exception:
-                pass
+                    target = max(
+                        int(webrtc_target_fps),
+                        min(int(webrtc_fps_max), int(dxgi_capture_target_fps)),
+                    )
+                    try:
+                        dxgi_camera.start(target_fps=target, video_mode=True)
+                    except TypeError:
+                        dxgi_camera.start(target_fps=target)
+            except Exception as e:
+                print(f"[DXGI] start failed: {e}")
             dxgi_failure_count = 0
             dxgi_retry_after = 0.0
             print(f"[DXGI] camera initialized, output={dxgi_camera.width}x{dxgi_camera.height}")
@@ -676,6 +765,11 @@ def init_dxgi_camera():
         except Exception as e:
             print(f"[DXGI] initialization failed: {e}")
             dxgi_camera = None
+            if _is_dxgi_unsupported_error(e):
+                dxgi_hard_disabled = True
+                dxgi_capture_enabled = False
+                dxgi_retry_after = float("inf")
+                print("[DXGI] unsupported on current adapter/feature level; disabling DXGI retries.")
             return False
 
 def release_dxgi_camera():
@@ -696,9 +790,40 @@ def release_dxgi_camera():
             dxgi_camera = None
 
 
+def reconfigure_dxgi_capture_fps():
+    """Apply latest target FPS to a running DXGI capture instance."""
+    global dxgi_camera
+    with dxgi_lock:
+        if dxgi_camera is None:
+            return False
+        target = max(
+            int(webrtc_target_fps),
+            min(int(webrtc_fps_max), int(dxgi_capture_target_fps)),
+        )
+        try:
+            if hasattr(dxgi_camera, "stop"):
+                dxgi_camera.stop()
+            if hasattr(dxgi_camera, "start"):
+                try:
+                    dxgi_camera.start(target_fps=target, video_mode=True)
+                except TypeError:
+                    dxgi_camera.start(target_fps=target)
+            return True
+        except Exception as e:
+            print(f"[DXGI] reconfigure FPS failed: {e}")
+            return False
+
+
 def handle_dxgi_error(err):
     """Record DXGI failures and back off before retry."""
-    global dxgi_failure_count, dxgi_retry_after
+    global dxgi_failure_count, dxgi_retry_after, dxgi_capture_enabled, dxgi_hard_disabled
+    if _is_dxgi_unsupported_error(err):
+        dxgi_hard_disabled = True
+        dxgi_capture_enabled = False
+        dxgi_retry_after = float("inf")
+        print(f"[DXGI Error] {err}, fallback to MSS, DXGI disabled until manual re-enable")
+        release_dxgi_camera()
+        return
     dxgi_failure_count = min(dxgi_failure_count + 1, 8)
     backoff = min(30.0, float(2 ** (dxgi_failure_count - 1)))
     dxgi_retry_after = time.time() + backoff
@@ -707,7 +832,7 @@ def handle_dxgi_error(err):
 
 
 def should_try_dxgi():
-    if not dxgi_capture_enabled:
+    if (not dxgi_capture_enabled) or dxgi_hard_disabled:
         return False
     return time.time() >= dxgi_retry_after
 
@@ -783,6 +908,10 @@ def capture_screen_frame_np():
                 else:
                     frame = dxgi_camera.grab()
             if frame is not None:
+                if frame.ndim == 3 and frame.shape[2] == 4:
+                    if not frame.flags["C_CONTIGUOUS"]:
+                        frame = np.ascontiguousarray(frame)
+                    return frame, "bgra"
                 if frame.ndim == 3 and frame.shape[2] >= 3:
                     rgb = frame[:, :, :3]
                     if not rgb.flags["C_CONTIGUOUS"]:
@@ -1329,6 +1458,7 @@ if WEBRTC_AVAILABLE:
             self._last = None
             self._created_ts = float(time.time())
             self._last_pump_restart_ts = 0.0
+            self._stale_count = 0
             self._clock_rate = 90000
             self._time_base = Fraction(1, self._clock_rate)
             self._timestamp = 0
@@ -1337,12 +1467,8 @@ if WEBRTC_AVAILABLE:
         async def recv(self):
             global webrtc_target_fps
             requested_fps = max(15, min(int(webrtc_fps_max), int(webrtc_target_fps)))
-            capture_fps = float(self._pump.capture_fps())
-            if capture_fps >= 8.0:
-                # Avoid high-rate duplicate-frame encoding when capture cannot keep up.
-                target_fps = max(15, min(requested_fps, int(capture_fps + 1.0)))
-            else:
-                target_fps = requested_fps
+            # Keep sender cadence on requested FPS; frame pump always exposes latest frame.
+            target_fps = requested_fps
             ticks_per_frame = max(1, int(self._clock_rate / target_fps))
             wait_s = 0.0
             if self._started_at is None:
@@ -1361,12 +1487,18 @@ if WEBRTC_AVAILABLE:
 
             # If frame pump is stale for too long, restart capture backend.
             frame_age = self._pump.frame_age()
+            capture_fps = float(self._pump.capture_fps())
             if frame_age == float("inf") and (time.time() - self._created_ts) < 3.0:
                 frame_age = 0.0
-            if frame_age > 2.5:
+            if frame_age > 3.0 and capture_fps < 1.0:
+                self._stale_count += 1
+            else:
+                self._stale_count = 0
+            if self._stale_count >= 3:
                 now = time.time()
-                if now - self._last_pump_restart_ts >= 3.0:
+                if now - self._last_pump_restart_ts >= 6.0:
                     self._last_pump_restart_ts = now
+                    self._stale_count = 0
                     self._pump.restart(f"stalled age={frame_age:.2f}s")
 
             latest = self._pump.get_latest()
@@ -1415,6 +1547,7 @@ def server_info():
         'fps': fps,
         'mjpeg_enabled': False,
         'webrtc_capture_backend': 'dxgi' if dxgi_capture_enabled else 'mss',
+        'dxgi_capture_target_fps': int(dxgi_capture_target_fps),
         'webrtc_fps': webrtc_target_fps,
         'webrtc_fps_max': int(webrtc_fps_max),
         'webrtc_scale': webrtc_scale,
@@ -1481,6 +1614,30 @@ def audio_health():
         'last_error': status.get('last_error', ''),
         'client_stats': client,
     }
+
+
+@app.route('/api/video_health')
+def video_health():
+    capture_fps = 0.0
+    if webrtc_frame_pump is not None:
+        try:
+            capture_fps = float(webrtc_frame_pump.capture_fps())
+        except Exception:
+            capture_fps = 0.0
+    status = _video_snapshot()
+    client = status.get('client_stats') or {}
+    client_up = bool(
+        float(client.get('bytes_received', 0.0)) > 0
+        and (time.time() - float(client.get('ts', 0.0))) < 15.0
+    )
+    return {
+        'capture_fps': float(round(capture_fps, 1)),
+        'target_fps': int(webrtc_target_fps),
+        'bitrate_kbps': int(webrtc_target_bitrate_kbps),
+        'encoder': _get_active_video_encoder_name() or video_encoder_status.get('preferred', ''),
+        'client_up': bool(client_up),
+        'client_stats': client,
+    }
 # Cleaned garbled comment.
 
 @socketio.on('connect')
@@ -1505,6 +1662,13 @@ def handle_disconnect():
     print(f"[Socket] client disconnected, connected_clients={connected_clients}")
 
     sid = request.sid
+    try:
+        snapshot = _video_snapshot()
+        cstats = snapshot.get("client_stats") or {}
+        if str(cstats.get("sid", "")) == str(sid):
+            _video_set_client_stats({})
+    except Exception:
+        pass
     global xinput_pad, xinput_owner_sid, xinput_last_buttons
     if sid == xinput_owner_sid:
         with xinput_lock:
@@ -1600,6 +1764,12 @@ def _webrtc_apply_codec_preferences(pc: RTCPeerConnection):
         video_caps = RTCRtpSender.getCapabilities("video").codecs
         h264 = [c for c in video_caps if (c.name or "").upper() == "H264"]
         if h264:
+            # Prefer constrained-baseline profile when both are available.
+            h264.sort(
+                key=lambda c: 0
+                if str((c.parameters or {}).get("profile-level-id", "")).lower().startswith("42e0")
+                else 1
+            )
             for transceiver in pc.getTransceivers():
                 if transceiver.kind == "video" and hasattr(transceiver, "setCodecPreferences"):
                     transceiver.setCodecPreferences(h264)
@@ -1619,11 +1789,95 @@ def _webrtc_apply_codec_preferences(pc: RTCPeerConnection):
         pass
 
 
+def _h264_level_limits_for_target(target_w: int, target_h: int, target_fps: int):
+    """Return (level_idc_hex, max_fs, max_mbps) for current target stream."""
+    mb_w = max(1, int((target_w + 15) // 16))
+    mb_h = max(1, int((target_h + 15) // 16))
+    max_fs_needed = int(mb_w * mb_h)
+    max_mbps_needed = int(max_fs_needed * max(15, int(target_fps)))
+
+    # (level_idc_hex, max_fs, max_mbps)
+    levels = [
+        (0x1F, 3600, 108000),     # 3.1
+        (0x28, 8192, 245760),     # 4.0
+        (0x29, 8192, 245760),     # 4.1
+        (0x2A, 8704, 522240),     # 4.2
+        (0x32, 22080, 589824),    # 5.0
+        (0x33, 36864, 983040),    # 5.1
+        (0x34, 36864, 2073600),   # 5.2
+    ]
+    selected = levels[-1]
+    for row in levels:
+        _, fs_cap, mbps_cap = row
+        if max_fs_needed <= fs_cap and max_mbps_needed <= mbps_cap:
+            selected = row
+            break
+
+    # Cap signaled level at 5.1 for better mobile compatibility.
+    if selected[0] > 0x33:
+        selected = (0x33, 36864, 983040)
+    return selected
+
+
+def _h264_munge_fmtp_line(line: str, target_fps: int) -> str:
+    try:
+        screen = pyautogui.size()
+        sw = int(screen.width)
+        sh = int(screen.height)
+    except Exception:
+        sw = int(getattr(_screen_size, "width", 1920))
+        sh = int(getattr(_screen_size, "height", 1080))
+
+    scale = max(0.25, min(1.0, float(webrtc_scale)))
+    target_w = max(320, min(int(webrtc_max_width), int(sw * scale)))
+    target_h = max(240, min(int(webrtc_max_height), int(sh * scale)))
+
+    # Signal up to 60fps capability for high-res H264 to avoid over-signaling 120fps.
+    signal_fps = max(15, min(60, int(target_fps)))
+    level_idc, max_fs, max_mbps = _h264_level_limits_for_target(target_w, target_h, signal_fps)
+
+    if " " not in line:
+        return line
+    head, body = line.split(" ", 1)
+    params = [tok.strip() for tok in body.split(";") if tok.strip()]
+
+    def _get_param(key: str):
+        key_l = key.lower()
+        for token in params:
+            if "=" not in token:
+                continue
+            k, v = token.split("=", 1)
+            if k.strip().lower() == key_l:
+                return k.strip(), v.strip()
+        return None, None
+
+    def _set_param(key: str, value: str):
+        key_l = key.lower()
+        for idx, token in enumerate(params):
+            if "=" not in token:
+                continue
+            k, _ = token.split("=", 1)
+            if k.strip().lower() == key_l:
+                params[idx] = f"{k.strip()}={value}"
+                return
+        params.append(f"{key}={value}")
+
+    # Keep profile-level-id conservative for mobile decoder compatibility.
+    # Real capability is carried by max-fs / max-mbps below.
+    signaled_level_idc = min(int(level_idc), 0x2A)  # up to Level 4.2
+    _set_param("profile-level-id", f"42e0{signaled_level_idc:02x}")
+
+    _set_param("max-fs", str(max_fs))
+    _set_param("max-mbps", str(max_mbps))
+    return f"{head} {';'.join(params)}"
+
+
 def _webrtc_munge_answer_sdp(sdp: str, bitrate_kbps: int, target_fps: int) -> str:
     """Inject video bitrate/fps hints into SDP answer."""
-    bitrate_kbps = max(500, min(60000, int(bitrate_kbps)))
+    bitrate_kbps = max(500, min(80000, int(bitrate_kbps)))
     # Keep SDP framerate hint aligned with codec pipeline capability.
     target_fps = max(15, min(120, int(target_fps)))
+    sdp_fps_hint = max(15, min(60, int(target_fps)))
 
     lines = sdp.splitlines()
     out = []
@@ -1636,7 +1890,7 @@ def _webrtc_munge_answer_sdp(sdp: str, bitrate_kbps: int, target_fps: int) -> st
 
         if stripped.startswith("m="):
             if in_video and not framerate_set:
-                out.append(f"a=framerate:{target_fps}")
+                out.append(f"a=framerate:{sdp_fps_hint}")
             in_video = stripped.startswith("m=video")
             framerate_set = False
             out.append(line)
@@ -1649,26 +1903,30 @@ def _webrtc_munge_answer_sdp(sdp: str, bitrate_kbps: int, target_fps: int) -> st
             if lower.startswith("b=as:") or lower.startswith("b=tias:"):
                 continue
             if lower.startswith("a=framerate:"):
-                out.append(f"a=framerate:{target_fps}")
+                out.append(f"a=framerate:{sdp_fps_hint}")
                 framerate_set = True
                 continue
             if lower.startswith("a=fmtp:"):
-                extras = []
-                if "x-google-start-bitrate=" not in lower:
-                    extras.append(f"x-google-start-bitrate={bitrate_kbps}")
-                if "x-google-max-bitrate=" not in lower:
-                    extras.append(f"x-google-max-bitrate={bitrate_kbps}")
-                if "x-google-min-bitrate=" not in lower:
-                    extras.append("x-google-min-bitrate=300")
-                if extras:
-                    line = f"{line};{';'.join(extras)}"
+                is_h264_fmtp = ("profile-level-id=" in lower) or ("packetization-mode=" in lower)
+                if is_h264_fmtp:
+                    line = _h264_munge_fmtp_line(line, target_fps=target_fps)
+                    line_lower = line.strip().lower()
+                    extras = []
+                    if "x-google-start-bitrate=" not in line_lower:
+                        extras.append(f"x-google-start-bitrate={bitrate_kbps}")
+                    if "x-google-max-bitrate=" not in line_lower:
+                        extras.append(f"x-google-max-bitrate={bitrate_kbps}")
+                    if "x-google-min-bitrate=" not in line_lower:
+                        extras.append("x-google-min-bitrate=300")
+                    if extras:
+                        line = f"{line};{';'.join(extras)}"
             out.append(line)
             continue
 
         out.append(line)
 
     if in_video and not framerate_set:
-        out.append(f"a=framerate:{target_fps}")
+        out.append(f"a=framerate:{sdp_fps_hint}")
 
     sep = "\r\n" if "\r\n" in sdp else "\n"
     return sep.join(out) + sep
@@ -1707,44 +1965,56 @@ async def _webrtc_handle_offer(sid: str, offer_sdp: str, offer_type: str):
 
     @pc.on("connectionstatechange")
     async def _on_connection_state_change():
-        if pc.connectionState in ("failed", "closed", "disconnected"):
+        # "disconnected" can be transient on Wi-Fi; avoid tearing down immediately.
+        if pc.connectionState in ("failed", "closed"):
             await _webrtc_close_peer(sid)
+    try:
+        await pc.setRemoteDescription(RTCSessionDescription(sdp=offer_sdp, type=offer_type))
 
-    await pc.setRemoteDescription(RTCSessionDescription(sdp=offer_sdp, type=offer_type))
+        if webrtc_frame_pump is not None:
+            video_track = ScreenVideoTrack(webrtc_frame_pump)
+            _webrtc_attach_track(pc, "video", video_track)
 
-    if webrtc_frame_pump is not None:
-        video_track = ScreenVideoTrack(webrtc_frame_pump)
-        _webrtc_attach_track(pc, "video", video_track)
+        if audio_enabled:
+            if SOUNDDEVICE_AVAILABLE and WEBRTC_AVAILABLE:
+                try:
+                    audio_track = SystemAudioTrack()
+                    if _webrtc_attach_track(pc, "audio", audio_track):
+                        webrtc_audio_tracks[sid] = audio_track
+                        print("[Audio] WebRTC track attached")
+                    else:
+                        audio_track.stop()
+                        _audio_set_error("attach_audio_track_failed")
+                except Exception as e:
+                    _audio_set_status(capture_running=False)
+                    _audio_set_error(f"audio_track_init_failed: {e}")
+                    print(f"[Audio] track init failed: {e}")
+            else:
+                _audio_set_error("sounddevice_unavailable")
 
-    if audio_enabled:
-        if SOUNDDEVICE_AVAILABLE and WEBRTC_AVAILABLE:
-            try:
-                audio_track = SystemAudioTrack()
-                if _webrtc_attach_track(pc, "audio", audio_track):
-                    webrtc_audio_tracks[sid] = audio_track
-                    print("[Audio] WebRTC track attached")
-                else:
-                    audio_track.stop()
-                    _audio_set_error("attach_audio_track_failed")
-            except Exception as e:
-                _audio_set_status(capture_running=False)
-                _audio_set_error(f"audio_track_init_failed: {e}")
-                print(f"[Audio] track init failed: {e}")
-        else:
-            _audio_set_error("sounddevice_unavailable")
+        _webrtc_apply_codec_preferences(pc)
 
-    _webrtc_apply_codec_preferences(pc)
-
-    _sync_webrtc_bitrate_target()
-    answer = await pc.createAnswer()
-    answer_sdp = _webrtc_munge_answer_sdp(
-        answer.sdp,
-        bitrate_kbps=webrtc_target_bitrate_kbps,
-        target_fps=webrtc_target_fps,
-    )
-    await pc.setLocalDescription(RTCSessionDescription(sdp=answer_sdp, type=answer.type))
-    await _webrtc_wait_ice_complete(pc)
-    return {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
+        _sync_webrtc_bitrate_target()
+        answer = await pc.createAnswer()
+        answer_sdp = _webrtc_munge_answer_sdp(
+            answer.sdp,
+            bitrate_kbps=webrtc_target_bitrate_kbps,
+            target_fps=webrtc_target_fps,
+        )
+        try:
+            for _line in answer_sdp.splitlines():
+                _lower = _line.strip().lower()
+                if _lower.startswith("a=fmtp:") and "profile-level-id=" in _lower:
+                    print(f"[WebRTC] answer video fmtp: {_line.strip()}")
+                    break
+        except Exception:
+            pass
+        await pc.setLocalDescription(RTCSessionDescription(sdp=answer_sdp, type=answer.type))
+        await _webrtc_wait_ice_complete(pc)
+        return {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
+    except Exception:
+        await _webrtc_close_peer(sid, keep_frame_pump=True)
+        raise
 
 
 @socketio.on('webrtc_offer')
@@ -1765,6 +2035,10 @@ def handle_webrtc_offer(data):
         answer = fut.result(timeout=15)
         emit('webrtc_answer', answer)
     except Exception as e:
+        try:
+            asyncio.run_coroutine_threadsafe(_webrtc_close_peer(sid, keep_frame_pump=True), webrtc_loop)
+        except Exception:
+            pass
         emit('webrtc_error', {'error': str(e)})
 
 
@@ -1784,6 +2058,24 @@ def handle_audio_client_stats(data):
         'error': str(data.get('error', '') or ''),
     }
     _audio_set_status(client_stats=cleaned)
+
+
+@socketio.on('video_client_stats')
+def handle_video_client_stats(data):
+    if not isinstance(data, dict):
+        return
+    cleaned = {
+        'bytes_received': float(data.get('bytes_received', 0.0) or 0.0),
+        'packets_lost': int(data.get('packets_lost', 0) or 0),
+        'frames_decoded': int(data.get('frames_decoded', 0) or 0),
+        'frames_dropped': int(data.get('frames_dropped', 0) or 0),
+        'frames_per_second': float(data.get('frames_per_second', 0.0) or 0.0),
+        'decode_ms': float(data.get('decode_ms', 0.0) or 0.0),
+        'jitter_ms': float(data.get('jitter_ms', 0.0) or 0.0),
+        'sid': request.sid,
+        'ts': time.time(),
+    }
+    _video_set_client_stats(cleaned)
 
 
 @socketio.on('set_mode')
@@ -2287,6 +2579,8 @@ def handle_set_fps(data, sid=None):
     unchanged = (int(fps) == int(new_fps) and int(webrtc_target_fps) == int(new_fps))
     fps = new_fps
     webrtc_target_fps = new_fps
+    if not unchanged and dxgi_capture_enabled and dxgi_camera is not None:
+        reconfigure_dxgi_capture_fps()
 
     bitrate_kbps = _sync_webrtc_bitrate_target()
     if not unchanged:
@@ -2315,10 +2609,11 @@ def handle_set_webrtc_scale(data):
 @socketio.on('set_capture_mode')
 def handle_set_capture_mode(data):
     """Cleaned garbled docstring."""
-    global dxgi_capture_enabled, dxgi_failure_count, dxgi_retry_after
+    global dxgi_capture_enabled, dxgi_failure_count, dxgi_retry_after, dxgi_hard_disabled
     mode = data.get('mode', 'auto')
 
     if mode == 'dxgi':
+        dxgi_hard_disabled = False
         dxgi_retry_after = 0.0
         dxgi_failure_count = 0
         dxgi_capture_enabled = init_dxgi_camera()
@@ -2331,6 +2626,7 @@ def handle_set_capture_mode(data):
         release_dxgi_camera()
         emit('capture_mode_updated', {'mode': 'mss', 'status': 'ok'})
     else:  # auto
+        dxgi_hard_disabled = False
         dxgi_capture_enabled = True
         ok = init_dxgi_camera()
         emit('capture_mode_updated', {'mode': 'dxgi' if ok else 'mss', 'status': 'ok'})

@@ -1013,9 +1013,19 @@ class RTCPeerConnection(AsyncIOEventEmitter):
                 iceTransport.iceGatherer.getLocalCandidates()
                 and transceiver in self.__remoteIce
             ):
-                await iceTransport.start(self.__remoteIce[transceiver])
+                try:
+                    await iceTransport.start(self.__remoteIce[transceiver])
+                except InvalidStateError as exc:
+                    if "closed" in str(exc).lower():
+                        return
+                    raise
                 if dtlsTransport.state == "new":
-                    await dtlsTransport.start(self.__remoteDtls[transceiver])
+                    try:
+                        await dtlsTransport.start(self.__remoteDtls[transceiver])
+                    except InvalidStateError as exc:
+                        if "closed" in str(exc).lower():
+                            return
+                        raise
                 if dtlsTransport.state == "connected":
                     if transceiver.currentDirection in ["sendonly", "sendrecv"]:
                         await transceiver.sender.send(self.__localRtp(transceiver))
@@ -1030,9 +1040,19 @@ class RTCPeerConnection(AsyncIOEventEmitter):
                 iceTransport.iceGatherer.getLocalCandidates()
                 and self.__sctp in self.__remoteIce
             ):
-                await iceTransport.start(self.__remoteIce[self.__sctp])
+                try:
+                    await iceTransport.start(self.__remoteIce[self.__sctp])
+                except InvalidStateError as exc:
+                    if "closed" in str(exc).lower():
+                        return
+                    raise
                 if dtlsTransport.state == "new":
-                    await dtlsTransport.start(self.__remoteDtls[self.__sctp])
+                    try:
+                        await dtlsTransport.start(self.__remoteDtls[self.__sctp])
+                    except InvalidStateError as exc:
+                        if "closed" in str(exc).lower():
+                            return
+                        raise
                 if dtlsTransport.state == "connected":
                     await self.__sctp.start(
                         self.__sctpRemoteCaps, self.__sctpRemotePort

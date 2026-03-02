@@ -52,6 +52,7 @@ const state = {
     webrtc: {
         pc: null,
         using: false,
+        starting: false,
         restartTimer: null,
         restartAttempts: 0,
         maxRestartAttempts: 6,
@@ -74,6 +75,11 @@ const state = {
         audioLastTs: 0,
         packetsLost: 0,
         framesDropped: 0,
+        framesDecoded: 0,
+        framesPerSecond: 0,
+        decodeMs: 0,
+        decodeTotalSec: 0,
+        decodeTotalFrames: 0,
         jitterMs: 0,
         lastBytes: 0,
         lastTs: 0,
@@ -259,6 +265,10 @@ function scheduleWebRTCRestart(reason, delayMs = 1200) {
     state.webrtc.restartTimer = setTimeout(async () => {
         state.webrtc.restartTimer = null;
         if (!state.connected) return;
+        if (state.webrtc.starting) {
+            scheduleWebRTCRestart('start_busy', nextDelay);
+            return;
+        }
         try {
             await startWebRTC();
             state.webrtc.restartAttempts = 0;
@@ -306,6 +316,8 @@ function startWebRTCStats() {
     state.webrtcStats.lastTs = 0;
     state.webrtcStats.audioLastBytes = 0;
     state.webrtcStats.audioLastTs = 0;
+    state.webrtcStats.decodeTotalSec = 0;
+    state.webrtcStats.decodeTotalFrames = 0;
 
     state.webrtcStats.timer = setInterval(async () => {
         if (!state.webrtc.using || !state.webrtc.pc) return;
@@ -332,7 +344,34 @@ function startWebRTCStats() {
                 state.webrtcStats.lastBytes = bytes;
                 state.webrtcStats.packetsLost = videoInbound.packetsLost || 0;
                 state.webrtcStats.framesDropped = videoInbound.framesDropped || 0;
+                state.webrtcStats.framesDecoded = videoInbound.framesDecoded || 0;
+                state.webrtcStats.framesPerSecond = videoInbound.framesPerSecond || 0;
                 state.webrtcStats.jitterMs = videoInbound.jitter ? videoInbound.jitter * 1000 : 0;
+                const totalDecodeTime = Number(videoInbound.totalDecodeTime || 0);
+                const totalDecoded = Number(videoInbound.framesDecoded || 0);
+                if (
+                    totalDecodeTime > 0 &&
+                    totalDecoded > 0 &&
+                    totalDecodeTime >= state.webrtcStats.decodeTotalSec &&
+                    totalDecoded >= state.webrtcStats.decodeTotalFrames
+                ) {
+                    const dSec = totalDecodeTime - state.webrtcStats.decodeTotalSec;
+                    const dFrames = totalDecoded - state.webrtcStats.decodeTotalFrames;
+                    if (dFrames > 0) {
+                        state.webrtcStats.decodeMs = (dSec * 1000) / dFrames;
+                    }
+                    state.webrtcStats.decodeTotalSec = totalDecodeTime;
+                    state.webrtcStats.decodeTotalFrames = totalDecoded;
+                }
+                emit('video_client_stats', {
+                    bytes_received: bytes,
+                    packets_lost: state.webrtcStats.packetsLost,
+                    frames_decoded: state.webrtcStats.framesDecoded,
+                    frames_dropped: state.webrtcStats.framesDropped,
+                    frames_per_second: state.webrtcStats.framesPerSecond,
+                    decode_ms: state.webrtcStats.decodeMs || 0,
+                    jitter_ms: state.webrtcStats.jitterMs,
+                });
             }
 
             if (audioInbound) {
@@ -392,73 +431,82 @@ function startVideoFrameMonitor() {
 
 async function startWebRTC() {
     if (!window.RTCPeerConnection || !state.socket) return false;
+    if (state.webrtc.starting) return false;
+    state.webrtc.starting = true;
 
     const videoEl = document.getElementById('screen-video');
     const screenImg = document.getElementById('screen');
-    if (!videoEl || !screenImg) return false;
+    if (!videoEl || !screenImg) {
+        state.webrtc.starting = false;
+        return false;
+    }
 
-    clearWebRTCRestartTimer();
-    stopMJPEG();
-    stopWebRTC();
+    try {
+        clearWebRTCRestartTimer();
+        stopMJPEG();
+        stopWebRTC();
 
-    const pc = new RTCPeerConnection({ iceServers: [] });
-    state.webrtc.pc = pc;
+        const pc = new RTCPeerConnection({ iceServers: [] });
+        state.webrtc.pc = pc;
 
-    pc.addTransceiver('video', { direction: 'recvonly' });
-    pc.addTransceiver('audio', { direction: 'recvonly' });
+        pc.addTransceiver('video', { direction: 'recvonly' });
+        pc.addTransceiver('audio', { direction: 'recvonly' });
 
-    pc.ontrack = (e) => {
-        if (pc !== state.webrtc.pc) return;
-        const stream = (e.streams && e.streams[0]) ? e.streams[0] : null;
-        if (e.track && e.track.kind === 'audio') {
-            const audioStream = stream || new MediaStream([e.track]);
-            attachRemoteAudioStream(audioStream);
-            return;
-        }
-        if (e.track && e.track.kind === 'video' && stream) {
-            stopMJPEG();
-            videoEl.srcObject = stream;
-            videoEl.classList.remove('hidden');
-            screenImg.classList.add('hidden');
-            state.webrtc.using = true;
-            state.webrtc.lastFrameAt = Date.now();
-            state.webrtc.restartAttempts = 0;
-            startVideoFrameMonitor();
-            startWebRTCStats();
-            startWebRTCFreezeWatchdog();
-            if (e.track) {
-                e.track.onended = () => {
-                    if (pc !== state.webrtc.pc) return;
-                    scheduleWebRTCRestart('video_track_ended', 1200);
-                };
+        pc.ontrack = (e) => {
+            if (pc !== state.webrtc.pc) return;
+            const stream = (e.streams && e.streams[0]) ? e.streams[0] : null;
+            if (e.track && e.track.kind === 'audio') {
+                const audioStream = stream || new MediaStream([e.track]);
+                attachRemoteAudioStream(audioStream);
+                return;
             }
-        }
-    };
+            if (e.track && e.track.kind === 'video' && stream) {
+                stopMJPEG();
+                videoEl.srcObject = stream;
+                videoEl.classList.remove('hidden');
+                screenImg.classList.add('hidden');
+                state.webrtc.using = true;
+                state.webrtc.lastFrameAt = Date.now();
+                state.webrtc.restartAttempts = 0;
+                startVideoFrameMonitor();
+                startWebRTCStats();
+                startWebRTCFreezeWatchdog();
+                if (e.track) {
+                    e.track.onended = () => {
+                        if (pc !== state.webrtc.pc) return;
+                        scheduleWebRTCRestart('video_track_ended', 1200);
+                    };
+                }
+            }
+        };
 
-    pc.onconnectionstatechange = () => {
-        if (pc !== state.webrtc.pc) return;
-        const s = pc.connectionState;
-        if (s === 'failed' || s === 'closed' || s === 'disconnected') {
-            scheduleWebRTCRestart('connection_' + s, 1200);
-        }
-    };
+        pc.onconnectionstatechange = () => {
+            if (pc !== state.webrtc.pc) return;
+            const s = pc.connectionState;
+            if (s === 'failed' || s === 'closed' || s === 'disconnected') {
+                scheduleWebRTCRestart('connection_' + s, 1200);
+            }
+        };
 
-    pc.oniceconnectionstatechange = () => {
-        if (pc !== state.webrtc.pc) return;
-        const s = pc.iceConnectionState;
-        if (s === 'failed' || s === 'closed' || s === 'disconnected') {
-            scheduleWebRTCRestart('ice_' + s, 1200);
-        }
-    };
+        pc.oniceconnectionstatechange = () => {
+            if (pc !== state.webrtc.pc) return;
+            const s = pc.iceConnectionState;
+            if (s === 'failed' || s === 'closed' || s === 'disconnected') {
+                scheduleWebRTCRestart('ice_' + s, 1200);
+            }
+        };
 
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    emit('webrtc_offer', { sdp: offer.sdp, type: offer.type });
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        emit('webrtc_offer', { sdp: offer.sdp, type: offer.type });
 
-    const answer = await socketOnce('webrtc_answer', 12000);
-    if (!answer || !answer.sdp) throw new Error('bad_answer');
-    await pc.setRemoteDescription(answer);
-    return true;
+        const answer = await socketOnce('webrtc_answer', 12000);
+        if (!answer || !answer.sdp) throw new Error('bad_answer');
+        await pc.setRemoteDescription(answer);
+        return true;
+    } finally {
+        state.webrtc.starting = false;
+    }
 }
 
 async function startVideoTransport() {

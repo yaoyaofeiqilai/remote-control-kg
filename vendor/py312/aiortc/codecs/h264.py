@@ -1,6 +1,7 @@
 import fractions
 import logging
 import math
+import os
 from itertools import tee
 from struct import pack, unpack_from
 from typing import Iterator, List, Optional, Sequence, Tuple, Type, TypeVar
@@ -18,7 +19,9 @@ LAST_ENCODER_NAME = ""
 
 DEFAULT_BITRATE = 12000000  # 12 Mbps
 MIN_BITRATE = 2000000  # 2 Mbps
-MAX_BITRATE = 30000000  # 30 Mbps
+MAX_BITRATE = 80000000  # 80 Mbps
+HIGHRES_MIN_BITRATE = int(os.getenv("RC_WEBRTC_HIGHRES_MIN_BITRATE_BPS", "12000000"))
+HIGHRES_MIN_PIXELS = int(os.getenv("RC_WEBRTC_HIGHRES_MIN_PIXELS", "3000000"))
 
 MAX_FRAME_RATE = 120
 PACKET_MAX = 1300
@@ -132,12 +135,11 @@ def create_encoder_context(
     codec.pix_fmt = "yuv420p"
     codec.framerate = fractions.Fraction(MAX_FRAME_RATE, 1)
     codec.time_base = fractions.Fraction(1, MAX_FRAME_RATE)
-    options = {
-        "tune": "zerolatency",
-    }
+    options = {}
     if codec_name == "libx264":
         options.update(
             {
+                "tune": "zerolatency",
                 "profile": "baseline",
                 "preset": "ultrafast",
                 "x264-params": (
@@ -147,14 +149,29 @@ def create_encoder_context(
                 ),
             }
         )
-    elif codec_name == "h264_mf":
-        # Media Foundation hardware path: keep low latency and stable cadence.
+    elif codec_name == "h264_nvenc":
         options = {
-            "g": str(MAX_FRAME_RATE),
+            "g": str(MAX_FRAME_RATE * 2),
             "bf": "0",
-            "look_ahead": "0",
-            "scenario": "1",
+        }
+    elif codec_name == "h264_qsv":
+        codec.pix_fmt = "nv12"
+        options = {
+            "g": str(MAX_FRAME_RATE * 2),
+            "bf": "0",
+        }
+    elif codec_name == "h264_amf":
+        options = {
+            "g": str(MAX_FRAME_RATE * 2),
+            "bf": "0",
+        }
+    elif codec_name == "h264_mf":
+        # Media Foundation hardware path: prioritize steady high-fps throughput.
+        options = {
+            "g": str(MAX_FRAME_RATE * 2),
+            "bf": "0",
             "usage": "ultralowlatency",
+            "low_latency": "1",
         }
     codec.options = options
     codec.open()
@@ -169,6 +186,7 @@ class H264Encoder(Encoder):
         self.codec_buffering = False
         self.codec_name = ""
         self.__target_bitrate = DEFAULT_BITRATE
+        self._hw_codecs = {"h264_nvenc", "h264_qsv", "h264_amf", "h264_mf"}
 
     @staticmethod
     def _packetize_fu_a(data: bytes) -> List[bytes]:
@@ -290,16 +308,28 @@ class H264Encoder(Encoder):
     def _encode_frame(
         self, frame: av.VideoFrame, force_keyframe: bool
     ) -> Iterator[bytes]:
-        if self.codec and (
-            frame.width != self.codec.width
-            or frame.height != self.codec.height
-            # we only adjust bitrate if it changes by over 10%
-            or abs(self.target_bitrate - self.codec.bit_rate) / self.codec.bit_rate
-            > 0.1
-        ):
-            self.buffer_data = b""
-            self.buffer_pts = None
-            self.codec = None
+        if self.codec:
+            needs_reset = (
+                frame.width != self.codec.width
+                or frame.height != self.codec.height
+            )
+            if not needs_reset:
+                codec_bit_rate = max(1, int(getattr(self.codec, "bit_rate", 0) or 0))
+                bitrate_delta = abs(self.target_bitrate - codec_bit_rate) / float(codec_bit_rate)
+                if bitrate_delta > 0.1:
+                    # Avoid costly hardware encoder re-open on normal congestion-control bitrate drift.
+                    if self.codec_name in self._hw_codecs:
+                        try:
+                            self.codec.bit_rate = int(self.target_bitrate)
+                        except Exception:
+                            pass
+                    else:
+                        needs_reset = True
+
+            if needs_reset:
+                self.buffer_data = b""
+                self.buffer_pts = None
+                self.codec = None
 
         if force_keyframe:
             # force a complete image
@@ -367,7 +397,15 @@ class H264Encoder(Encoder):
 
     @target_bitrate.setter
     def target_bitrate(self, bitrate: int) -> None:
-        bitrate = max(MIN_BITRATE, min(bitrate, MAX_BITRATE))
+        min_bitrate = int(MIN_BITRATE)
+        if self.codec is not None:
+            try:
+                pixels = int(self.codec.width) * int(self.codec.height)
+                if pixels >= int(HIGHRES_MIN_PIXELS):
+                    min_bitrate = max(min_bitrate, int(HIGHRES_MIN_BITRATE))
+            except Exception:
+                pass
+        bitrate = max(min_bitrate, min(int(bitrate), MAX_BITRATE))
         self.__target_bitrate = bitrate
 
 
