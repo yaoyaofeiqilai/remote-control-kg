@@ -14,6 +14,7 @@ from ..mediastreams import VIDEO_TIME_BASE, convert_timebase
 from .base import Decoder, Encoder
 
 logger = logging.getLogger(__name__)
+LAST_ENCODER_NAME = ""
 
 DEFAULT_BITRATE = 12000000  # 12 Mbps
 MIN_BITRATE = 2000000  # 2 Mbps
@@ -133,16 +134,16 @@ def create_encoder_context(
     codec.time_base = fractions.Fraction(1, MAX_FRAME_RATE)
     options = {
         "profile": "baseline",
-        "level": "31",
         "tune": "zerolatency",
     }
     if codec_name == "libx264":
         options.update(
             {
-                "preset": "superfast",
+                "preset": "ultrafast",
                 "x264-params": (
                     f"keyint={MAX_FRAME_RATE}:min-keyint={MAX_FRAME_RATE}:"
-                    "scenecut=0:rc-lookahead=0:sync-lookahead=0:bframes=0:force-cfr=1"
+                    "scenecut=0:rc-lookahead=0:sync-lookahead=0:bframes=0:"
+                    "force-cfr=1:no-mbtree=1:sliced-threads=1"
                 ),
             }
         )
@@ -157,6 +158,7 @@ class H264Encoder(Encoder):
         self.buffer_pts: Optional[int] = None
         self.codec: Optional[av.CodecContext] = None
         self.codec_buffering = False
+        self.codec_name = ""
         self.__target_bitrate = DEFAULT_BITRATE
 
     @staticmethod
@@ -304,6 +306,10 @@ class H264Encoder(Encoder):
                     self.codec, self.codec_buffering = create_encoder_context(
                         codec_name, frame.width, frame.height, bitrate=self.target_bitrate
                     )
+                    self.codec_name = codec_name
+                    global LAST_ENCODER_NAME
+                    LAST_ENCODER_NAME = codec_name
+                    logger.info("H264 encoder selected: %s", codec_name)
                     break
                 except Exception as e:
                     last_error = e

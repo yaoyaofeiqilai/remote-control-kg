@@ -82,7 +82,7 @@ def load_dxcam():
 
 # Cleaned garbled comment.
 try:
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image
 except ImportError as e:
     print(f"[Error] Failed to import Pillow: {e}")
     print("Run: python -m pip install Pillow")
@@ -129,6 +129,15 @@ try:
 except Exception as e:
     print(f"[WebRTC] dependency load failed: {e}")
 
+AV_MODULE_AVAILABLE = False
+av_mod = None
+try:
+    import av as _av_mod
+    av_mod = _av_mod
+    AV_MODULE_AVAILABLE = True
+except Exception:
+    pass
+
 # Cleaned garbled comment.
 STATIC_DIR = os.path.join(PROJECT_ROOT, 'static')
 TEMPLATE_DIR = os.path.join(PROJECT_ROOT, 'templates')
@@ -161,10 +170,15 @@ pyautogui.PAUSE = 0.01
 # Cleaned garbled comment.
 connected_clients = 0
 quality = 60  # Cleaned garbled comment.
-fps = 30  # Cleaned garbled comment.
+fps = 60  # Cleaned garbled comment.
 
 webrtc_enabled = True
-webrtc_target_fps = _env_int("RC_WEBRTC_FPS", 30, 5, 60)
+webrtc_capture_backend = (os.getenv("RC_CAPTURE_BACKEND", "auto") or "auto").strip().lower()
+if webrtc_capture_backend not in ("auto", "dxgi", "mss"):
+    webrtc_capture_backend = "auto"
+webrtc_fps_max = _env_int("RC_WEBRTC_FPS_MAX", 120, 30, 240)
+webrtc_target_fps = _env_int("RC_WEBRTC_FPS", 60, 5, webrtc_fps_max)
+fps = int(webrtc_target_fps)
 _screen_size = pyautogui.size()
 webrtc_scale = _env_float("RC_WEBRTC_SCALE", 1.0, 0.25, 1.0)
 webrtc_max_width = _env_int("RC_WEBRTC_MAX_WIDTH", int(_screen_size.width), 320, 7680)
@@ -172,6 +186,7 @@ webrtc_max_height = _env_int("RC_WEBRTC_MAX_HEIGHT", int(_screen_size.height), 2
 capture_all_monitors = _env_flag("RC_CAPTURE_ALL_MONITORS", False)
 webrtc_bitrate_auto = _env_flag("RC_WEBRTC_AUTO_BITRATE", True)
 webrtc_target_bitrate_kbps = _env_int("RC_WEBRTC_BITRATE_KBPS", 12000, 500, 60000)
+webrtc_bitrate_scale = _env_float("RC_WEBRTC_BITRATE_SCALE", 1.15, 0.5, 3.0)
 webrtc_peers = {}
 webrtc_audio_tracks = {}
 webrtc_loop = None
@@ -190,7 +205,7 @@ def _estimate_webrtc_bitrate_kbps():
         screen_h = int(getattr(_screen_size, "height", 1080))
 
     scale = max(0.25, min(1.0, float(webrtc_scale)))
-    fps_now = max(15, min(60, int(webrtc_target_fps)))
+    fps_now = max(15, min(int(webrtc_fps_max), int(webrtc_target_fps)))
     quality_now = max(10, min(95, int(quality)))
 
     target_w = max(320, int(screen_w * scale))
@@ -199,7 +214,7 @@ def _estimate_webrtc_bitrate_kbps():
 
     # 10..95 => 0.4..1.5
     quality_factor = 0.4 + ((quality_now - 10) / 85.0) * 1.1
-    kbps = int(mpix_per_s * 80.0 * quality_factor)
+    kbps = int(mpix_per_s * 80.0 * quality_factor * float(webrtc_bitrate_scale))
     return max(800, min(60000, kbps))
 
 
@@ -212,6 +227,46 @@ def _sync_webrtc_bitrate_target():
 
 
 _sync_webrtc_bitrate_target()
+
+
+def _probe_video_encoders():
+    """Probe H264 encoder availability from current AV build."""
+    result = {
+        "available": [],
+        "hardware_available": [],
+        "preferred": "libx264",
+        "active": "",
+    }
+    candidates = ("h264_nvenc", "h264_qsv", "h264_amf", "h264_omx", "libx264")
+    if not AV_MODULE_AVAILABLE or av_mod is None:
+        return result
+
+    available = []
+    for name in candidates:
+        try:
+            av_mod.CodecContext.create(name, "w")
+            available.append(name)
+        except Exception:
+            pass
+    result["available"] = available
+    result["hardware_available"] = [n for n in available if n != "libx264"]
+    if result["hardware_available"]:
+        result["preferred"] = result["hardware_available"][0]
+    elif "libx264" in available:
+        result["preferred"] = "libx264"
+    return result
+
+
+video_encoder_status = _probe_video_encoders()
+
+
+def _get_active_video_encoder_name():
+    try:
+        import aiortc.codecs.h264 as h264_mod
+        name = str(getattr(h264_mod, "LAST_ENCODER_NAME", "") or "")
+        return name
+    except Exception:
+        return ""
 
 
 audio_enabled = _env_flag("RC_AUDIO_ENABLED", True)
@@ -251,7 +306,7 @@ if audio_enabled and not SOUNDDEVICE_AVAILABLE:
 
 # Cleaned garbled comment.
 dxgi_camera = None
-dxgi_capture_enabled = False  # Cleaned garbled comment.
+dxgi_capture_enabled = webrtc_capture_backend in ("auto", "dxgi")  # Cleaned garbled comment.
 dxgi_lock = threading.RLock()
 dxgi_failure_count = 0
 dxgi_retry_after = 0.0
@@ -709,52 +764,11 @@ def get_mss():
     return inst, monitor
 
 
-def capture_screen():
-    """Cleaned garbled docstring."""
-    global dxgi_camera
-
-    # Cleaned garbled comment.
-    if should_try_dxgi():
-        try:
-            # Cleaned garbled comment.
-            with dxgi_lock:
-                if dxgi_camera is None:
-                    if not init_dxgi_camera():
-                        raise Exception("DXGI init failed")
-
-                # Cleaned garbled comment.
-                frame = dxgi_camera.grab()
-
-            if frame is not None:
-                # Cleaned garbled comment.
-                img = Image.fromarray(frame)
-                return img
-            else:
-                return None
-
-        except Exception as e:
-            handle_dxgi_error(e)
-
-    # Cleaned garbled comment.
-    try:
-        inst, monitor = get_mss()
-        screenshot = inst.grab(monitor)
-        img = Image.frombytes("RGB", screenshot.size, screenshot.bgra, "raw", "BGRX")
-        return img
-    except Exception as e:
-        print(f"[Screen Capture Error] {e}")
-        # Cleaned garbled comment.
-        img = Image.new('RGB', (1920, 1080), color=(20, 20, 30))
-        draw = ImageDraw.Draw(img)
-        try:
-            font = ImageFont.truetype("C:/Windows/Fonts/arial.ttf", 40)
-        except:
-            font = ImageFont.load_default()
-        draw.text((100, 100), f"Screen capture error: {e}", fill=(255, 255, 255), font=font)
-        return img
-
-
-def capture_screen_rgb_np():
+def capture_screen_frame_np():
+    """
+    Capture one frame for WebRTC.
+    Returns: (ndarray, pixel_format) where pixel_format is 'rgb24' or 'bgra'.
+    """
     global dxgi_camera
 
     if should_try_dxgi():
@@ -771,10 +785,10 @@ def capture_screen_rgb_np():
             if frame is not None:
                 if frame.ndim == 3 and frame.shape[2] >= 3:
                     rgb = frame[:, :, :3]
-                    if rgb.flags["C_CONTIGUOUS"]:
-                        return rgb
-                    return np.ascontiguousarray(rgb)
-            return None
+                    if not rgb.flags["C_CONTIGUOUS"]:
+                        rgb = np.ascontiguousarray(rgb)
+                    return rgb, "rgb24"
+            return None, None
         except Exception as e:
             handle_dxgi_error(e)
 
@@ -783,11 +797,12 @@ def capture_screen_rgb_np():
         screenshot = inst.grab(monitor)
         bgra = np.frombuffer(screenshot.bgra, dtype=np.uint8)
         bgra = bgra.reshape((screenshot.height, screenshot.width, 4))
-        rgb = bgra[:, :, [2, 1, 0]]
-        return np.ascontiguousarray(rgb)
+        if not bgra.flags["C_CONTIGUOUS"]:
+            bgra = np.ascontiguousarray(bgra)
+        return bgra, "bgra"
     except Exception as e:
         print(f"[Screen Capture Error] {e}")
-        return None
+        return None, None
 
 
 def resize_rgb_frame(frame, target_w, target_h):
@@ -809,12 +824,34 @@ def resize_rgb_frame(frame, target_w, target_h):
     return np.ascontiguousarray(arr)
 
 
+def to_rgb24(frame, pixel_format):
+    """Convert captured frame to rgb24 when processing requires it."""
+    if frame is None:
+        return None
+    if pixel_format == "rgb24":
+        if frame.flags["C_CONTIGUOUS"]:
+            return frame
+        return np.ascontiguousarray(frame)
+    if pixel_format == "bgra":
+        rgb = frame[:, :, [2, 1, 0]]
+        return np.ascontiguousarray(rgb)
+    if frame.ndim == 3 and frame.shape[2] >= 3:
+        rgb = frame[:, :, :3]
+        if rgb.flags["C_CONTIGUOUS"]:
+            return rgb
+        return np.ascontiguousarray(rgb)
+    return None
+
+
 class WebRTCFramePump:
     def __init__(self):
         self._lock = threading.Lock()
         self._state_lock = threading.Lock()
         self._latest = None
         self._latest_ts = 0.0
+        self._capture_fps = 0.0
+        self._fps_counter = 0
+        self._fps_window_start = float(time.time())
         self._running = False
         self._thread = None
         self._generation = 0
@@ -849,6 +886,10 @@ class WebRTCFramePump:
             if self._latest is None or self._latest_ts <= 0.0:
                 return float("inf")
             return max(0.0, float(time.time() - self._latest_ts))
+
+    def capture_fps(self):
+        with self._lock:
+            return float(self._capture_fps)
 
     def restart(self, reason="unknown"):
         print(f"[WebRTC] frame pump restart: {reason}")
@@ -893,7 +934,7 @@ class WebRTCFramePump:
 
             t0 = time.time()
             try:
-                frame = capture_screen_rgb_np()
+                frame, pixel_format = capture_screen_frame_np()
             except Exception as e:
                 now = time.time()
                 if now - self._last_error_log_ts >= 2.0:
@@ -903,7 +944,7 @@ class WebRTCFramePump:
                 continue
 
             if frame is None:
-                interval = 1.0 / max(15, min(60, int(webrtc_target_fps)))
+                interval = 1.0 / max(15, min(int(webrtc_fps_max), int(webrtc_target_fps)))
                 dt = time.time() - t0
                 sleep_time = interval - dt
                 if sleep_time > 0:
@@ -913,27 +954,59 @@ class WebRTCFramePump:
             # Apply requested scale first.
             scale = float(webrtc_scale)
             if scale < 0.99:
-                h, w = frame.shape[:2]
-                target_w = max(2, int(round(float(w) * max(0.25, min(1.0, scale)))))
-                target_h = max(2, int(round(float(h) * max(0.25, min(1.0, scale)))))
-                frame = resize_rgb_frame(frame, target_w, target_h)
+                rgb = to_rgb24(frame, pixel_format)
+                if rgb is None:
+                    frame = None
+                    pixel_format = None
+                else:
+                    frame = rgb
+                    pixel_format = "rgb24"
+                    h, w = frame.shape[:2]
+                    target_w = max(2, int(round(float(w) * max(0.25, min(1.0, scale)))))
+                    target_h = max(2, int(round(float(h) * max(0.25, min(1.0, scale)))))
+                    frame = resize_rgb_frame(frame, target_w, target_h)
 
             # Hard safety cap for mobile/browser stability.
-            h, w = frame.shape[:2]
-            max_w = max(1, int(webrtc_max_width))
-            max_h = max(1, int(webrtc_max_height))
-            if w > max_w or h > max_h:
-                ratio = min(float(max_w) / float(w), float(max_h) / float(h))
-                target_w = max(2, int(round(float(w) * ratio)))
-                target_h = max(2, int(round(float(h) * ratio)))
-                frame = resize_rgb_frame(frame, target_w, target_h)
+            if frame is not None:
+                h, w = frame.shape[:2]
+                max_w = max(1, int(webrtc_max_width))
+                max_h = max(1, int(webrtc_max_height))
+                if w > max_w or h > max_h:
+                    rgb = to_rgb24(frame, pixel_format)
+                    if rgb is None:
+                        frame = None
+                        pixel_format = None
+                    else:
+                        frame = rgb
+                        pixel_format = "rgb24"
+                        h, w = frame.shape[:2]
+                        ratio = min(float(max_w) / float(w), float(max_h) / float(h))
+                        target_w = max(2, int(round(float(w) * ratio)))
+                        target_h = max(2, int(round(float(h) * ratio)))
+                        frame = resize_rgb_frame(frame, target_w, target_h)
 
-            frame = np.ascontiguousarray(frame)
+            if frame is None:
+                interval = 1.0 / max(15, min(int(webrtc_fps_max), int(webrtc_target_fps)))
+                dt = time.time() - t0
+                sleep_time = interval - dt
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                continue
+
+            if not frame.flags["C_CONTIGUOUS"]:
+                frame = np.ascontiguousarray(frame)
             with self._lock:
-                self._latest = frame
+                self._latest = (frame, pixel_format or "rgb24")
                 self._latest_ts = float(time.time())
+                self._fps_counter += 1
+                now = time.time()
+                window = now - self._fps_window_start
+                if window >= 1.0:
+                    self._capture_fps = float(self._fps_counter) / float(max(window, 1e-6))
+                    self._fps_counter = 0
+                    self._fps_window_start = now
 
-            target_fps = max(15, min(60, int(webrtc_target_fps)))
+            target_fps = max(15, min(int(webrtc_fps_max), int(webrtc_target_fps)))
             interval = 1.0 / target_fps
             dt = time.time() - t0
             sleep_time = interval - dt
@@ -1263,7 +1336,13 @@ if WEBRTC_AVAILABLE:
 
         async def recv(self):
             global webrtc_target_fps
-            target_fps = max(15, min(60, int(webrtc_target_fps)))
+            requested_fps = max(15, min(int(webrtc_fps_max), int(webrtc_target_fps)))
+            capture_fps = float(self._pump.capture_fps())
+            if capture_fps >= 8.0:
+                # Avoid high-rate duplicate-frame encoding when capture cannot keep up.
+                target_fps = max(15, min(requested_fps, int(capture_fps + 1.0)))
+            else:
+                target_fps = requested_fps
             ticks_per_frame = max(1, int(self._clock_rate / target_fps))
             wait_s = 0.0
             if self._started_at is None:
@@ -1290,19 +1369,22 @@ if WEBRTC_AVAILABLE:
                     self._last_pump_restart_ts = now
                     self._pump.restart(f"stalled age={frame_age:.2f}s")
 
-            frame = self._pump.get_latest()
-            if frame is None:
-                frame = self._last
-            if frame is None:
+            latest = self._pump.get_latest()
+            if latest is None:
+                latest = self._last
+            if latest is None:
                 await asyncio.sleep(0.005)
-                frame = self._pump.get_latest()
+                latest = self._pump.get_latest()
 
-            if frame is None:
+            if latest is None:
                 h, w = 720, 1280
                 frame = np.zeros((h, w, 3), dtype=np.uint8)
-            self._last = frame
+                pixel_format = "rgb24"
+                latest = (frame, pixel_format)
+            self._last = latest
+            frame, pixel_format = latest
 
-            vf = VideoFrame.from_ndarray(frame, format="rgb24")
+            vf = VideoFrame.from_ndarray(frame, format=(pixel_format or "rgb24"))
             vf.pts = self._timestamp
             vf.time_base = self._time_base
             return vf
@@ -1317,6 +1399,13 @@ def index():
 @app.route('/api/info')
 def server_info():
     """Basic server info endpoint."""
+    capture_fps = 0.0
+    active_encoder = _get_active_video_encoder_name()
+    if webrtc_frame_pump is not None:
+        try:
+            capture_fps = float(webrtc_frame_pump.capture_fps())
+        except Exception:
+            capture_fps = 0.0
     return {
         'ip': get_local_ip(),
         'port': 5000,
@@ -1325,10 +1414,17 @@ def server_info():
         'quality': quality,
         'fps': fps,
         'mjpeg_enabled': False,
+        'webrtc_capture_backend': 'dxgi' if dxgi_capture_enabled else 'mss',
         'webrtc_fps': webrtc_target_fps,
+        'webrtc_fps_max': int(webrtc_fps_max),
         'webrtc_scale': webrtc_scale,
         'webrtc_bitrate_kbps': webrtc_target_bitrate_kbps,
+        'webrtc_bitrate_scale': float(webrtc_bitrate_scale),
+        'capture_fps': round(capture_fps, 1),
         'capture_all_monitors': bool(capture_all_monitors),
+        'video_encoder_active': active_encoder or video_encoder_status.get('preferred', 'libx264'),
+        'video_encoders_available': list(video_encoder_status.get('available', [])),
+        'video_hw_encoders_available': list(video_encoder_status.get('hardware_available', [])),
     }
 
 
@@ -1524,7 +1620,7 @@ def _webrtc_apply_codec_preferences(pc: RTCPeerConnection):
 def _webrtc_munge_answer_sdp(sdp: str, bitrate_kbps: int, target_fps: int) -> str:
     """Inject video bitrate/fps hints into SDP answer."""
     bitrate_kbps = max(500, min(60000, int(bitrate_kbps)))
-    target_fps = max(15, min(60, int(target_fps)))
+    target_fps = max(15, min(int(webrtc_fps_max), int(target_fps)))
 
     lines = sdp.splitlines()
     out = []
@@ -2180,12 +2276,30 @@ def handle_set_quality(data, sid=None):
 def handle_set_fps(data, sid=None):
     """Cleaned garbled docstring."""
     global fps, webrtc_target_fps
-    new_fps = max(15, min(60, data.get('fps', 30)))
+    try:
+        requested_fps = int(data.get('fps', webrtc_target_fps))
+    except Exception:
+        requested_fps = int(webrtc_target_fps)
+    new_fps = max(15, min(int(webrtc_fps_max), requested_fps))
     fps = new_fps
     webrtc_target_fps = new_fps
+
+    # Restart DXGI stream to apply target_fps for dxcam.start(...).
+    if dxgi_capture_enabled and dxgi_camera is not None:
+        try:
+            release_dxgi_camera()
+            init_dxgi_camera()
+        except Exception:
+            pass
+
     bitrate_kbps = _sync_webrtc_bitrate_target()
     print(f"[Settings] FPS updated: {fps}, webrtc_bitrate={bitrate_kbps}kbps")
-    emit('fps_updated', {'fps': fps, 'webrtc_fps': webrtc_target_fps, 'webrtc_bitrate_kbps': bitrate_kbps})
+    emit('fps_updated', {
+        'fps': fps,
+        'webrtc_fps': webrtc_target_fps,
+        'webrtc_fps_max': int(webrtc_fps_max),
+        'webrtc_bitrate_kbps': bitrate_kbps
+    })
 
 
 @socketio.on('set_webrtc_scale')
@@ -2220,8 +2334,9 @@ def handle_set_capture_mode(data):
         release_dxgi_camera()
         emit('capture_mode_updated', {'mode': 'mss', 'status': 'ok'})
     else:  # auto
-        dxgi_capture_enabled = init_dxgi_camera()
-        emit('capture_mode_updated', {'mode': 'dxgi' if dxgi_capture_enabled else 'mss', 'status': 'ok'})
+        dxgi_capture_enabled = True
+        ok = init_dxgi_camera()
+        emit('capture_mode_updated', {'mode': 'dxgi' if ok else 'mss', 'status': 'ok'})
 
 
 @socketio.on('get_capture_info')
@@ -2243,10 +2358,12 @@ def main():
     # Cleaned garbled comment.
     use_dxgi = '--dxgi' in sys.argv
 
-    # Cleaned garbled comment.
-    if use_dxgi:
+    # Performance default: try DXGI unless explicitly configured as MSS only.
+    if use_dxgi or dxgi_capture_enabled:
         print("[Startup] trying DXGI capture mode...")
-        init_dxgi_camera()
+        ok = init_dxgi_camera()
+        if not ok and webrtc_capture_backend == "dxgi":
+            print("[Startup] DXGI forced but init failed, fallback to MSS disabled by config.")
 
     print("=" * 50)
     print("    Remote control server started")
@@ -2254,7 +2371,10 @@ def main():
     print(f"  Host IP: {ip}")
     print(f"  Port: {port}")
     print(f"  Screen size: {pyautogui.size()}")
+    print(f"  Capture backend pref: {webrtc_capture_backend}")
     print(f"  Capture mode: {'DXGI (hardware)' if dxgi_camera else 'MSS (software)'}")
+    print(f"  Video encoder preferred: {video_encoder_status.get('preferred', 'libx264')}")
+    print(f"  Video HW encoders: {video_encoder_status.get('hardware_available', [])}")
     print(f"  Audio: {'ON' if audio_enabled else 'OFF'}")
     print(f"  Audio device hint: {audio_device_name or '(auto)'}")
     print("-" * 50)
@@ -2267,7 +2387,7 @@ def main():
     if dxgi_camera:
         print("\n[Hint] DXGI capture enabled; run as admin to capture UAC prompts.")
     else:
-        print("\n[Hint] Use: python server.py --dxgi to enable hardware capture")
+        print("\n[Hint] DXGI init failed, running MSS fallback.")
     print()
 
     try:

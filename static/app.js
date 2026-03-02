@@ -536,11 +536,17 @@ function initSocket() {
 
     state.socket.on('fps_updated', (data) => {
         if (!data) return;
-        const v = parseInt(data.webrtc_fps ?? data.fps ?? 30, 10);
+        const maxFps = parseInt(data.webrtc_fps_max ?? 120, 10);
+        const v = parseInt(data.webrtc_fps ?? data.fps ?? 60, 10);
         if (!Number.isFinite(v)) return;
         const fpsSlider = document.getElementById('fps-slider');
         const fpsValue = document.getElementById('fps-value');
-        if (fpsSlider) fpsSlider.value = String(v);
+        if (fpsSlider) {
+            if (Number.isFinite(maxFps) && maxFps >= 30) {
+                fpsSlider.max = String(maxFps);
+            }
+            fpsSlider.value = String(v);
+        }
         if (fpsValue) fpsValue.textContent = String(v);
     });
 
