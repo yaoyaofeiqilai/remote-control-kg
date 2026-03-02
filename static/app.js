@@ -1,21 +1,21 @@
-/**
- * 远程控制客户端 - 平板端控制界面
- * 优化版本：低延迟、无遮挡UI
+﻿/**
+ * 杩滅▼鎺у埗瀹㈡埛绔?- 骞虫澘绔帶鍒剁晫闈?
+ * 浼樺寲鐗堟湰锛氫綆寤惰繜銆佹棤閬尅UI
  */
 
-// ============ 全局配置 ============
+// ============ 鍏ㄥ眬閰嶇疆 ============
 
 const CONFIG = {
     mouseSensitivity: 3.0,
     deadzone: 0.2,
     maxStickDistance: 90,
-    lowLatencyMode: true,  // 低延迟模式
-    touchThrottleMs: 8,    // 触摸节流(约120Hz)
+    lowLatencyMode: true,  // 浣庡欢杩熸ā寮?
+    touchThrottleMs: 8,    // 瑙︽懜鑺傛祦(绾?20Hz)
     gameMode: {
         cameraSensitivity: 100,
-        pinchSensitivity: 0.25,  // 双指缩放灵敏度（deltaDist -> 滚轮 dy）
+        pinchSensitivity: 0.25,  // 鍙屾寚缂╂斁鐏垫晱搴︼紙deltaDist -> 婊氳疆 dy锛?
         webrtcScale: 1.0,
-        showCursorDot: true,     // 是否显示鼠标红点
+        showCursorDot: true,     // 鏄惁鏄剧ず榧犳爣绾㈢偣
     }
 };
 
@@ -29,7 +29,7 @@ function debugLog(...args) {
 }
 
 
-// ============ 状态管理 ============
+// ============ 鐘舵€佺鐞?============
 const state = {
     socket: null,
     connected: false,
@@ -52,9 +52,26 @@ const state = {
     webrtc: {
         pc: null,
         using: false,
+        restartTimer: null,
+        restartAttempts: 0,
+        maxRestartAttempts: 6,
+        lastFrameAt: 0,
+        freezeWatchdogTimer: null,
+    },
+    audio: {
+        unlocked: false,
+        hasTrack: false,
+        lastError: '',
     },
     webrtcStats: {
         bitrateMbps: 0,
+        audioKbps: 0,
+        audioBytes: 0,
+        audioLevel: 0,
+        audioPacketsLost: 0,
+        audioJitterMs: 0,
+        audioLastBytes: 0,
+        audioLastTs: 0,
         packetsLost: 0,
         framesDropped: 0,
         jitterMs: 0,
@@ -93,6 +110,63 @@ function getScreenElement() {
     return document.getElementById('screen');
 }
 
+function getAudioElement() {
+    return document.getElementById('remote-audio');
+}
+
+function updateAudioUnlockButton() {
+    const btn = document.getElementById('audio-unlock-btn');
+    if (!btn) return;
+    if (state.audio.unlocked || !state.audio.hasTrack) {
+        btn.classList.add('hidden');
+        return;
+    }
+    btn.classList.remove('hidden');
+}
+
+async function unlockRemoteAudio(reportError = true) {
+    const audioEl = getAudioElement();
+    if (!audioEl) return false;
+
+    try {
+        audioEl.muted = false;
+        audioEl.volume = 1;
+        await audioEl.play();
+        state.audio.unlocked = true;
+        state.audio.lastError = '';
+        updateAudioUnlockButton();
+        emit('audio_client_stats', {
+            unlocked: true,
+            playing: !audioEl.paused,
+            error: '',
+        });
+        return true;
+    } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        state.audio.lastError = msg;
+        if (reportError) {
+            emit('audio_client_stats', {
+                unlocked: false,
+                playing: false,
+                error: msg,
+            });
+        }
+        updateAudioUnlockButton();
+        return false;
+    }
+}
+
+function attachRemoteAudioStream(stream) {
+    const audioEl = getAudioElement();
+    if (!audioEl || !stream) return;
+    if (audioEl.srcObject !== stream) {
+        audioEl.srcObject = stream;
+    }
+    state.audio.hasTrack = true;
+    updateAudioUnlockButton();
+    unlockRemoteAudio(false);
+}
+
 function socketOnce(eventName, timeoutMs = 8000) {
     return new Promise((resolve, reject) => {
         if (!state.socket) {
@@ -113,6 +187,62 @@ function socketOnce(eventName, timeoutMs = 8000) {
     });
 }
 
+function clearWebRTCRestartTimer() {
+    if (state.webrtc.restartTimer) {
+        clearTimeout(state.webrtc.restartTimer);
+        state.webrtc.restartTimer = null;
+    }
+}
+
+function stopMJPEG() {
+    const screenImg = document.getElementById('screen');
+    if (!screenImg) return;
+    // Force-close multipart MJPEG request when switching to WebRTC.
+    if (screenImg.src) {
+        screenImg.src = '';
+    }
+    screenImg.classList.add('hidden');
+}
+
+function startWebRTCFreezeWatchdog() {
+    if (state.webrtc.freezeWatchdogTimer) return;
+    state.webrtc.lastFrameAt = Date.now();
+    state.webrtc.freezeWatchdogTimer = setInterval(() => {
+        if (!state.webrtc.using || !state.webrtc.pc) return;
+        const last = state.webrtc.lastFrameAt || 0;
+        const stalledMs = Date.now() - last;
+        if (stalledMs < 5000) return;
+        scheduleWebRTCRestart('video_stalled', 1200);
+    }, 2000);
+}
+
+function scheduleWebRTCRestart(reason, delayMs = 1200) {
+    debugLog('[WebRTC] restart scheduled:', reason);
+    stopWebRTC();
+    startMJPEG();
+
+    if (!state.connected) return;
+    if (state.webrtc.restartTimer) return;
+    if (state.webrtc.restartAttempts >= state.webrtc.maxRestartAttempts) {
+        debugLog('[WebRTC] restart capped, stay on MJPEG');
+        return;
+    }
+
+    state.webrtc.restartAttempts += 1;
+    const nextDelay = Math.min(8000, Math.max(800, delayMs));
+    state.webrtc.restartTimer = setTimeout(async () => {
+        state.webrtc.restartTimer = null;
+        if (!state.connected) return;
+        try {
+            await startWebRTC();
+            state.webrtc.restartAttempts = 0;
+        } catch (e) {
+            startMJPEG();
+            scheduleWebRTCRestart('restart_failed', nextDelay * 2);
+        }
+    }, nextDelay);
+}
+
 function startMJPEG() {
     const screenImg = document.getElementById('screen');
     const videoEl = document.getElementById('screen-video');
@@ -128,6 +258,10 @@ function startMJPEG() {
 }
 
 function stopWebRTC() {
+    if (state.webrtc.freezeWatchdogTimer) {
+        clearInterval(state.webrtc.freezeWatchdogTimer);
+        state.webrtc.freezeWatchdogTimer = null;
+    }
     if (state.webrtcStats.timer) {
         clearInterval(state.webrtcStats.timer);
         state.webrtcStats.timer = null;
@@ -139,7 +273,17 @@ function stopWebRTC() {
         }
         state.webrtc.pc = null;
     }
+    const audioEl = getAudioElement();
+    if (audioEl) {
+        try {
+            audioEl.pause();
+        } catch (e) {
+        }
+        audioEl.srcObject = null;
+    }
+    state.audio.hasTrack = false;
     state.webrtc.using = false;
+    updateAudioUnlockButton();
 }
 
 function startWebRTCStats() {
@@ -149,29 +293,63 @@ function startWebRTCStats() {
 
     state.webrtcStats.lastBytes = 0;
     state.webrtcStats.lastTs = 0;
+    state.webrtcStats.audioLastBytes = 0;
+    state.webrtcStats.audioLastTs = 0;
 
     state.webrtcStats.timer = setInterval(async () => {
         if (!state.webrtc.using || !state.webrtc.pc) return;
         try {
             const stats = await state.webrtc.pc.getStats();
-            let inbound = null;
+            let videoInbound = null;
+            let audioInbound = null;
             stats.forEach((r) => {
-                if (r.type === 'inbound-rtp' && r.kind === 'video') inbound = r;
+                if (r.type === 'inbound-rtp' && r.kind === 'video') videoInbound = r;
+                if (r.type === 'inbound-rtp' && r.kind === 'audio') audioInbound = r;
             });
-            if (!inbound) return;
-
-            const nowTs = inbound.timestamp || performance.now();
-            const bytes = inbound.bytesReceived || 0;
-            if (state.webrtcStats.lastTs) {
-                const dt = (nowTs - state.webrtcStats.lastTs) / 1000;
-                const db = bytes - state.webrtcStats.lastBytes;
-                if (dt > 0) state.webrtcStats.bitrateMbps = (db * 8) / 1e6 / dt;
+            if (videoInbound) {
+                const nowTs = videoInbound.timestamp || performance.now();
+                const bytes = videoInbound.bytesReceived || 0;
+                if (bytes > state.webrtcStats.lastBytes) {
+                    state.webrtc.lastFrameAt = Date.now();
+                }
+                if (state.webrtcStats.lastTs) {
+                    const dt = (nowTs - state.webrtcStats.lastTs) / 1000;
+                    const db = bytes - state.webrtcStats.lastBytes;
+                    if (dt > 0) state.webrtcStats.bitrateMbps = (db * 8) / 1e6 / dt;
+                }
+                state.webrtcStats.lastTs = nowTs;
+                state.webrtcStats.lastBytes = bytes;
+                state.webrtcStats.packetsLost = videoInbound.packetsLost || 0;
+                state.webrtcStats.framesDropped = videoInbound.framesDropped || 0;
+                state.webrtcStats.jitterMs = videoInbound.jitter ? videoInbound.jitter * 1000 : 0;
             }
-            state.webrtcStats.lastTs = nowTs;
-            state.webrtcStats.lastBytes = bytes;
-            state.webrtcStats.packetsLost = inbound.packetsLost || 0;
-            state.webrtcStats.framesDropped = inbound.framesDropped || 0;
-            state.webrtcStats.jitterMs = inbound.jitter ? inbound.jitter * 1000 : 0;
+
+            if (audioInbound) {
+                const nowTs = audioInbound.timestamp || performance.now();
+                const bytes = audioInbound.bytesReceived || 0;
+                if (state.webrtcStats.audioLastTs) {
+                    const dt = (nowTs - state.webrtcStats.audioLastTs) / 1000;
+                    const db = bytes - state.webrtcStats.audioLastBytes;
+                    if (dt > 0) state.webrtcStats.audioKbps = (db * 8) / 1000 / dt;
+                }
+                state.webrtcStats.audioLastTs = nowTs;
+                state.webrtcStats.audioLastBytes = bytes;
+                state.webrtcStats.audioBytes = bytes;
+                state.webrtcStats.audioPacketsLost = audioInbound.packetsLost || 0;
+                state.webrtcStats.audioJitterMs = audioInbound.jitter ? audioInbound.jitter * 1000 : 0;
+                state.webrtcStats.audioLevel = audioInbound.audioLevel || 0;
+
+                const audioEl = getAudioElement();
+                emit('audio_client_stats', {
+                    bytes_received: state.webrtcStats.audioBytes,
+                    packets_lost: state.webrtcStats.audioPacketsLost,
+                    jitter_ms: state.webrtcStats.audioJitterMs,
+                    audio_level: state.webrtcStats.audioLevel,
+                    playing: !!(audioEl && !audioEl.paused),
+                    unlocked: !!state.audio.unlocked,
+                    error: state.audio.lastError || '',
+                });
+            }
         } catch (e) {
         }
     }, 1000);
@@ -183,6 +361,7 @@ function startVideoFrameMonitor() {
 
     const onFrame = () => {
         state.videoFrameCount++;
+        state.webrtc.lastFrameAt = Date.now();
         const now = Date.now();
         const elapsed = now - state.lastVideoFpsUpdate;
         if (elapsed >= 1000) {
@@ -207,29 +386,56 @@ async function startWebRTC() {
     const screenImg = document.getElementById('screen');
     if (!videoEl || !screenImg) return false;
 
+    clearWebRTCRestartTimer();
     stopWebRTC();
 
     const pc = new RTCPeerConnection({ iceServers: [] });
     state.webrtc.pc = pc;
 
     pc.addTransceiver('video', { direction: 'recvonly' });
+    pc.addTransceiver('audio', { direction: 'recvonly' });
 
     pc.ontrack = (e) => {
-        if (e.streams && e.streams[0]) {
-            videoEl.srcObject = e.streams[0];
+        if (pc !== state.webrtc.pc) return;
+        const stream = (e.streams && e.streams[0]) ? e.streams[0] : null;
+        if (e.track && e.track.kind === 'audio') {
+            const audioStream = stream || new MediaStream([e.track]);
+            attachRemoteAudioStream(audioStream);
+            return;
+        }
+        if (e.track && e.track.kind === 'video' && stream) {
+            stopMJPEG();
+            videoEl.srcObject = stream;
             videoEl.classList.remove('hidden');
             screenImg.classList.add('hidden');
             state.webrtc.using = true;
+            state.webrtc.lastFrameAt = Date.now();
+            state.webrtc.restartAttempts = 0;
             startVideoFrameMonitor();
             startWebRTCStats();
+            startWebRTCFreezeWatchdog();
+            if (e.track) {
+                e.track.onended = () => {
+                    if (pc !== state.webrtc.pc) return;
+                    scheduleWebRTCRestart('video_track_ended', 1200);
+                };
+            }
         }
     };
 
     pc.onconnectionstatechange = () => {
+        if (pc !== state.webrtc.pc) return;
         const s = pc.connectionState;
         if (s === 'failed' || s === 'closed' || s === 'disconnected') {
-            stopWebRTC();
-            startMJPEG();
+            scheduleWebRTCRestart('connection_' + s, 1200);
+        }
+    };
+
+    pc.oniceconnectionstatechange = () => {
+        if (pc !== state.webrtc.pc) return;
+        const s = pc.iceConnectionState;
+        if (s === 'failed' || s === 'closed' || s === 'disconnected') {
+            scheduleWebRTCRestart('ice_' + s, 1200);
         }
     };
 
@@ -248,13 +454,31 @@ async function startVideoTransport() {
         await startWebRTC();
     } catch (e) {
         startMJPEG();
+        state.webrtc.restartAttempts = 0;
     }
 }
 
-// ============ Socket.IO 连接 ============
+
+function initAudioUnlockControls() {
+    const unlockBtn = document.getElementById('audio-unlock-btn');
+    if (unlockBtn) {
+        unlockBtn.addEventListener('click', async () => {
+            await unlockRemoteAudio(true);
+        });
+    }
+
+    document.addEventListener('pointerdown', () => {
+        if (state.audio.hasTrack && !state.audio.unlocked) {
+            unlockRemoteAudio(false);
+        }
+    }, { passive: true });
+
+    updateAudioUnlockButton();
+}
+// ============ Socket.IO 杩炴帴 ============
 function initSocket() {
     const statusEl = document.getElementById('connection-status');
-    statusEl.textContent = '连接中...';
+    statusEl.textContent = '杩炴帴涓?..';
     statusEl.className = 'connecting';
 
     state.socket = io({
@@ -265,7 +489,7 @@ function initSocket() {
     });
 
     state.socket.on('connect', () => {
-        debugLog('[Socket] 已连接');
+        debugLog('[Socket] connected');
         state.connected = true;
         statusEl.textContent = '已连接';
         statusEl.className = 'connected';
@@ -277,34 +501,36 @@ function initSocket() {
     });
 
     state.socket.on('disconnect', () => {
-        debugLog('[Socket] 已断开');
+        debugLog('[Socket] 宸叉柇寮€');
         state.connected = false;
+        clearWebRTCRestartTimer();
+        state.webrtc.restartAttempts = 0;
         if (state.physicalGamepad) {
             state.physicalGamepad.serverAttached = false;
             state.physicalGamepad.connected = false;
         }
-        statusEl.textContent = '已断开';
+        statusEl.textContent = '宸叉柇寮€';
         statusEl.className = 'disconnected';
         stopWebRTC();
     });
 
     state.socket.on('connect_error', (err) => {
-        console.error('[Socket] 连接错误:', err);
-        statusEl.textContent = '连接失败';
+        console.error('[Socket] 杩炴帴閿欒:', err);
+        statusEl.textContent = '杩炴帴澶辫触';
         statusEl.className = 'disconnected';
     });
 
     state.socket.on('connected', (data) => {
         state.screenWidth = data.screen_width;
         state.screenHeight = data.screen_height;
-        debugLog('[Socket] 屏幕尺寸:', state.screenWidth, 'x', state.screenHeight);
+        debugLog('[Socket] 灞忓箷灏哄:', state.screenWidth, 'x', state.screenHeight);
 
-        // 初始化虚拟鼠标位置为屏幕中心
+        // 鍒濆鍖栬櫄鎷熼紶鏍囦綅缃负灞忓箷涓績
         if (!state.virtualMouse) {
             state.virtualMouse = { x: state.screenWidth / 2, y: state.screenHeight / 2 };
         }
 
-        // 开始同步鼠标位置
+        // 寮€濮嬪悓姝ラ紶鏍囦綅缃?
         startMouseSync();
 
         const qualitySlider = document.getElementById('quality-slider');
@@ -323,21 +549,21 @@ function initSocket() {
         startVideoTransport();
     });
 
-    // 监听服务端返回的鼠标位置
+    // 鐩戝惉鏈嶅姟绔繑鍥炵殑榧犳爣浣嶇疆
     state.socket.on('mouse_pos', (data) => {
         if (!state.virtualMouse) return;
 
-        // 如果在触摸状态，检查偏差是否过大，需要时校准
+        // 濡傛灉鍦ㄨЕ鎽哥姸鎬侊紝妫€鏌ュ亸宸槸鍚﹁繃澶э紝闇€瑕佹椂鏍″噯
         if (state.isTouching) {
-            // 在触摸模式下，只有偏差过大才校准（某些窗口会捕获鼠标）
+            // 鍦ㄨЕ鎽告ā寮忎笅锛屽彧鏈夊亸宸繃澶ф墠鏍″噯锛堟煇浜涚獥鍙ｄ細鎹曡幏榧犳爣锛?
             const dx = Math.abs(state.virtualMouse.x - data.x);
             const dy = Math.abs(state.virtualMouse.y - data.y);
             if (dx > 200 || dy > 200) {
-                debugLog(`[警告] 触摸时位置偏差过大 (${dx.toFixed(0)}, ${dy.toFixed(0)})`);
-                // 不立即校准，避免跳跃，但记录问题
+                debugLog(`[璀﹀憡] 瑙︽懜鏃朵綅缃亸宸繃澶?(${dx.toFixed(0)}, ${dy.toFixed(0)})`);
+                // 涓嶇珛鍗虫牎鍑嗭紝閬垮厤璺宠穬锛屼絾璁板綍闂
             }
         } else {
-            // 非触摸状态，直接同步服务端位置
+            // 闈炶Е鎽哥姸鎬侊紝鐩存帴鍚屾鏈嶅姟绔綅缃?
             state.virtualMouse.x = data.x;
             state.virtualMouse.y = data.y;
             updateVirtualCursorDisplay();
@@ -345,11 +571,11 @@ function initSocket() {
     });
 
     state.socket.on('webrtc_error', () => {
-        startMJPEG();
+        scheduleWebRTCRestart('server_webrtc_error', 1500);
     });
 }
 
-// 定期同步鼠标位置（每50ms）
+// 瀹氭湡鍚屾榧犳爣浣嶇疆锛堟瘡50ms锛?
 let mouseSyncInterval = null;
 
 function startMouseSync() {
@@ -368,7 +594,7 @@ function stopMouseSync() {
     }
 }
 
-// 更新虚拟指针显示位置
+// 鏇存柊铏氭嫙鎸囬拡鏄剧ず浣嶇疆
 function updateVirtualCursorDisplay() {
     const virtualCursor = document.getElementById('virtual-cursor');
     if (!virtualCursor || !state.virtualMouse) return;
@@ -378,7 +604,7 @@ function updateVirtualCursorDisplay() {
         return;
     }
 
-    // 游戏模式下根据设置决定是否显示红点
+    // 娓告垙妯″紡涓嬫牴鎹缃喅瀹氭槸鍚︽樉绀虹孩鐐?
     if (state.currentMode === 'gamepad' && !isGamepadPointerActive() && !CONFIG.gameMode.showCursorDot) {
         virtualCursor.classList.add('hidden');
         return;
@@ -387,11 +613,11 @@ function updateVirtualCursorDisplay() {
     const screenEl = getScreenElement();
     const rect = screenEl.getBoundingClientRect();
 
-    // 计算缩放比例
+    // 璁＄畻缂╂斁姣斾緥
     const scaleX = rect.width / state.screenWidth;
     const scaleY = rect.height / state.screenHeight;
 
-    // 计算显示位置
+    // 璁＄畻鏄剧ず浣嶇疆
     const displayX = rect.left + state.virtualMouse.x * scaleX;
     const displayY = rect.top + state.virtualMouse.y * scaleY;
 
@@ -400,11 +626,11 @@ function updateVirtualCursorDisplay() {
     virtualCursor.classList.remove('hidden');
 }
 
-// ============ 触摸坐标转换 ============
+// ============ 瑙︽懜鍧愭爣杞崲 ============
 function getRelativeCoordinates(touch, element) {
     const rect = element.getBoundingClientRect();
     const img = document.getElementById('screen');
-    // 使用实际显示尺寸计算比例
+    // 浣跨敤瀹為檯鏄剧ず灏哄璁＄畻姣斾緥
     const scaleX = state.screenWidth / rect.width;
     const scaleY = state.screenHeight / rect.height;
 
@@ -414,7 +640,7 @@ function getRelativeCoordinates(touch, element) {
     };
 }
 
-// 节流函数
+// 鑺傛祦鍑芥暟
 function throttle(func, limit) {
     let inThrottle;
     return function(...args) {
@@ -426,18 +652,18 @@ function throttle(func, limit) {
     };
 }
 
-// ============ 触摸板模式控制 ============
-// 对标笔记本触控板逻辑：
-// - 单指移动 = 鼠标移动（不触发点击）
-// - 单指点击 = 左键单击（延迟确认，避免与双击冲突）
-// - 双击并按住（第二次点击不释放）+ 移动 = 拖拽（可拖动窗口）
-// - 双指点击 = 右键
-// - 双指滑动 = 滚轮（上下左右四向）
+// ============ 瑙︽懜鏉挎ā寮忔帶鍒?============
+// 瀵规爣绗旇鏈Е鎺ф澘閫昏緫锛?
+// - 鍗曟寚绉诲姩 = 榧犳爣绉诲姩锛堜笉瑙﹀彂鐐瑰嚮锛?
+// - 鍗曟寚鐐瑰嚮 = 宸﹂敭鍗曞嚮锛堝欢杩熺‘璁わ紝閬垮厤涓庡弻鍑诲啿绐侊級
+// - 鍙屽嚮骞舵寜浣忥紙绗簩娆＄偣鍑讳笉閲婃斁锛? 绉诲姩 = 鎷栨嫿锛堝彲鎷栧姩绐楀彛锛?
+// - 鍙屾寚鐐瑰嚮 = 鍙抽敭
+// - 鍙屾寚婊戝姩 = 婊氳疆锛堜笂涓嬪乏鍙冲洓鍚戯級
 function initTouchMode() {
     const overlay = document.getElementById('touch-overlay');
     const virtualCursor = document.getElementById('virtual-cursor');
 
-    // 触摸板状态
+    // 瑙︽懜鏉跨姸鎬?
     let touchState = {
         touchCount: 0,
         startX: 0,
@@ -447,32 +673,32 @@ function initTouchMode() {
         startTime: 0,
         isMoving: false,
         hasMoved: false,
-        isDragging: false,      // 是否正在拖拽（双击并按住）
-        leftButtonDown: false,  // 左键是否按下
-        isSecondTap: false,     // 是否是双击中的第二次点击
-        pendingClick: false,    // 是否有待确认的单击
+        isDragging: false,      // 鏄惁姝ｅ湪鎷栨嫿锛堝弻鍑诲苟鎸変綇锛?
+        leftButtonDown: false,  // 宸﹂敭鏄惁鎸変笅
+        isSecondTap: false,     // 鏄惁鏄弻鍑讳腑鐨勭浜屾鐐瑰嚮
+        pendingClick: false,    // 鏄惁鏈夊緟纭鐨勫崟鍑?
     };
 
-    // 双击检测
+    // 鍙屽嚮妫€娴?
     let lastTapTime = 0;
     let lastTapX = 0;
     let lastTapY = 0;
-    let clickTimer = null;    // 用于延迟执行单击
+    let clickTimer = null;    // 鐢ㄤ簬寤惰繜鎵ц鍗曞嚮
 
-    // 常量
-    const DOUBLE_TAP_TIME = 800;      // 双击时间窗口（毫秒）
-    const DOUBLE_TAP_DISTANCE = 100;  // 双击最大距离（像素）
-    const CLICK_DELAY = 200;          // 单击延迟时间（等待确认不是双击）
-    const TWO_FINGER_TAP_MOVE_THRESHOLD = 10; // 双指轻触允许的抖动范围（像素）
-    const TWO_FINGER_SCROLL_DEADZONE = 2;     // 双指滚轮最小触发位移（像素）
-    const TWO_FINGER_TAP_MAX_DURATION = 420;  // 双指轻触最大时长（毫秒）
+    // 甯搁噺
+    const DOUBLE_TAP_TIME = 800;      // 鍙屽嚮鏃堕棿绐楀彛锛堟绉掞級
+    const DOUBLE_TAP_DISTANCE = 100;  // 鍙屽嚮鏈€澶ц窛绂伙紙鍍忕礌锛?
+    const CLICK_DELAY = 200;          // 鍗曞嚮寤惰繜鏃堕棿锛堢瓑寰呯‘璁や笉鏄弻鍑伙級
+    const TWO_FINGER_TAP_MOVE_THRESHOLD = 10; // 鍙屾寚杞昏Е鍏佽鐨勬姈鍔ㄨ寖鍥达紙鍍忕礌锛?
+    const TWO_FINGER_SCROLL_DEADZONE = 2;     // 鍙屾寚婊氳疆鏈€灏忚Е鍙戜綅绉伙紙鍍忕礌锛?
+    const TWO_FINGER_TAP_MAX_DURATION = 420;  // 鍙屾寚杞昏Е鏈€澶ф椂闀匡紙姣锛?
 
-    // 获取灵敏度配置
+    // 鑾峰彇鐏垫晱搴﹂厤缃?
     function getSensitivity() {
         return CONFIG.mouseSensitivity || 1.5;
     }
 
-    // 确保虚拟鼠标已初始化
+    // 纭繚铏氭嫙榧犳爣宸插垵濮嬪寲
     if (!state.virtualMouse) {
         state.virtualMouse = {
             x: state.screenWidth / 2,
@@ -480,10 +706,10 @@ function initTouchMode() {
         };
     }
 
-    // 偏差阈值 - 超过此值时进行校准
+    // 鍋忓樊闃堝€?- 瓒呰繃姝ゅ€兼椂杩涜鏍″噯
     const POS_SYNC_THRESHOLD = 100;
 
-    // 游戏模式下：全屏滑动 = 视角；Alt 锁定时滑动 = 光标
+    // 娓告垙妯″紡涓嬶細鍏ㄥ睆婊戝姩 = 瑙嗚锛汚lt 閿佸畾鏃舵粦鍔?= 鍏夋爣
     let gamepadSwipeState = {
         mode: null,
         touchId: null,
@@ -695,7 +921,7 @@ function initTouchMode() {
         state.isTouching = false;
     }
 
-    // 发送相对移动命令到服务端
+    // 鍙戦€佺浉瀵圭Щ鍔ㄥ懡浠ゅ埌鏈嶅姟绔?
     function sendRelativeMove(dx, dy) {
         if (!state.virtualMouse) {
             state.virtualMouse = {
@@ -704,22 +930,22 @@ function initTouchMode() {
             };
         }
 
-        // 更新本地虚拟鼠标位置
+        // 鏇存柊鏈湴铏氭嫙榧犳爣浣嶇疆
         state.virtualMouse.x += dx;
         state.virtualMouse.y += dy;
 
-        // 限制在屏幕范围内
+        // 闄愬埗鍦ㄥ睆骞曡寖鍥村唴
         state.virtualMouse.x = Math.max(0, Math.min(state.virtualMouse.x, state.screenWidth));
         state.virtualMouse.y = Math.max(0, Math.min(state.virtualMouse.y, state.screenHeight));
 
-        // 更新显示
+        // 鏇存柊鏄剧ず
         updateVirtualCursorDisplay();
 
-        // 发送到服务端
+        // 鍙戦€佸埌鏈嶅姟绔?
         emit('mouse_move_relative', { dx: dx, dy: dy });
     }
 
-    // 发送绝对位置（用于校准）
+    // 鍙戦€佺粷瀵逛綅缃紙鐢ㄤ簬鏍″噯锛?
     function sendAbsoluteMove(x, y) {
         state.virtualMouse.x = Math.max(0, Math.min(x, state.screenWidth));
         state.virtualMouse.y = Math.max(0, Math.min(y, state.screenHeight));
@@ -730,21 +956,21 @@ function initTouchMode() {
         });
     }
 
-    // 检查并校准位置（如果偏差过大）
+    // 妫€鏌ュ苟鏍″噯浣嶇疆锛堝鏋滃亸宸繃澶э級
     function checkAndCalibratePosition(serverX, serverY) {
         const dx = Math.abs(state.virtualMouse.x - serverX);
         const dy = Math.abs(state.virtualMouse.y - serverY);
 
-        // 如果偏差超过阈值，进行校准（但只在非拖拽模式下）
+        // 濡傛灉鍋忓樊瓒呰繃闃堝€硷紝杩涜鏍″噯锛堜絾鍙湪闈炴嫋鎷芥ā寮忎笅锛?
         if ((dx > POS_SYNC_THRESHOLD || dy > POS_SYNC_THRESHOLD) && !touchState.isDragging) {
-            debugLog(`[校准] 位置偏差过大 (${dx.toFixed(0)}, ${dy.toFixed(0)})，进行校准`);
+            debugLog(`[Calibrate] position drift too large (${dx.toFixed(0)}, ${dy.toFixed(0)})`);
             state.virtualMouse.x = serverX;
             state.virtualMouse.y = serverY;
             updateVirtualCursorDisplay();
         }
     }
 
-    // 执行单击
+    // 鎵ц鍗曞嚮
     function doClick() {
         const closeTabAfterClick = state.currentMode === 'gamepad' && state.gamepadTabWheelActive;
         playClickAnimation();
@@ -763,7 +989,7 @@ function initTouchMode() {
         }, 50);
     }
 
-    // 点击动画
+    // 鐐瑰嚮鍔ㄧ敾
     function playClickAnimation() {
         virtualCursor.classList.add('clicking');
         setTimeout(() => {
@@ -771,7 +997,7 @@ function initTouchMode() {
         }, 150);
     }
 
-    // 取消待处理的单击
+    // 鍙栨秷寰呭鐞嗙殑鍗曞嚮
     function cancelPendingClick() {
         if (clickTimer) {
             clearTimeout(clickTimer);
@@ -780,7 +1006,7 @@ function initTouchMode() {
         touchState.pendingClick = false;
     }
 
-    // 触摸开始
+    // 瑙︽懜寮€濮?
     overlay.addEventListener('touchstart', (e) => {
         e.preventDefault();
         if (state.currentMode === 'gamepad') {
@@ -794,7 +1020,7 @@ function initTouchMode() {
         const now = Date.now();
         const touch = e.touches[0];
 
-        // 检测双击（第二次点击）
+        // 妫€娴嬪弻鍑伙紙绗簩娆＄偣鍑伙級
         const timeSinceLastTap = now - lastTapTime;
         const isDoubleTap = (timeSinceLastTap < DOUBLE_TAP_TIME) &&
                             lastTapX !== 0 && lastTapY !== 0 &&
@@ -813,27 +1039,27 @@ function initTouchMode() {
             touchState.lastY = touch.clientY;
             touchState.isMoving = false;
 
-            // 触摸开始时，发送绝对位置进行校准（确保客户端和服务端位置一致）
-            // 这很重要，因为某些窗口会捕获/重置鼠标位置
+            // 瑙︽懜寮€濮嬫椂锛屽彂閫佺粷瀵逛綅缃繘琛屾牎鍑嗭紙纭繚瀹㈡埛绔拰鏈嶅姟绔綅缃竴鑷达級
+            // 杩欏緢閲嶈锛屽洜涓烘煇浜涚獥鍙ｄ細鎹曡幏/閲嶇疆榧犳爣浣嶇疆
             sendAbsoluteMove(state.virtualMouse.x, state.virtualMouse.y);
 
-            // 如果是双击，进入拖拽模式
+            // 濡傛灉鏄弻鍑伙紝杩涘叆鎷栨嫿妯″紡
             if (isDoubleTap) {
-                // 取消待处理的单击
+                // 鍙栨秷寰呭鐞嗙殑鍗曞嚮
                 cancelPendingClick();
                 touchState.isSecondTap = true;
                 touchState.isDragging = true;
                 touchState.leftButtonDown = true;
-                // 发送 left down（开始拖拽）
+                // 鍙戦€?left down锛堝紑濮嬫嫋鎷斤級
                 emit('mouse_click', { button: 'left', action: 'down' });
                 playClickAnimation();
-                debugLog('[触控] 进入拖拽模式');
+                debugLog('[瑙︽帶] 杩涘叆鎷栨嫿妯″紡');
             } else {
-                // 第一次点击，不立即执行，延迟等待确认是否是双击
+                // 绗竴娆＄偣鍑伙紝涓嶇珛鍗虫墽琛岋紝寤惰繜绛夊緟纭鏄惁鏄弻鍑?
                 touchState.isSecondTap = false;
                 touchState.pendingClick = true;
                 clickTimer = setTimeout(() => {
-                    // 延迟后执行单击
+                    // 寤惰繜鍚庢墽琛屽崟鍑?
                     if (touchState.pendingClick) {
                         touchState.pendingClick = false;
                         doClick();
@@ -842,7 +1068,7 @@ function initTouchMode() {
             }
 
         } else if (e.touches.length === 2) {
-            // 双指按下 - 取消单击，准备右键或滚轮
+            // 鍙屾寚鎸変笅 - 鍙栨秷鍗曞嚮锛屽噯澶囧彸閿垨婊氳疆
             cancelPendingClick();
 
             const touch1 = e.touches[0];
@@ -852,7 +1078,7 @@ function initTouchMode() {
             touchState.lastX = touchState.startX;
             touchState.lastY = touchState.startY;
 
-            // 如果之前有左键按住，抬起它
+            // 濡傛灉涔嬪墠鏈夊乏閿寜浣忥紝鎶捣瀹?
             if (touchState.leftButtonDown) {
                 emit('mouse_click', { button: 'left', action: 'up' });
                 touchState.leftButtonDown = false;
@@ -861,7 +1087,7 @@ function initTouchMode() {
         }
     }, { passive: false });
 
-    // 触摸移动
+    // 瑙︽懜绉诲姩
     overlay.addEventListener('touchmove', (e) => {
         e.preventDefault();
         if (state.currentMode === 'gamepad') {
@@ -874,15 +1100,15 @@ function initTouchMode() {
         if (!state.isTouching) return;
 
         if (e.touches.length === 1 && touchState.touchCount === 1) {
-            // 单指移动 - 控制鼠标或拖拽
+            // 鍗曟寚绉诲姩 - 鎺у埗榧犳爣鎴栨嫋鎷?
             const touch = e.touches[0];
 
-            // 计算移动差值
+            // 璁＄畻绉诲姩宸€?
             const sens = getSensitivity();
             const dx = (touch.clientX - touchState.lastX) * sens;
             const dy = (touch.clientY - touchState.lastY) * sens;
 
-            // 判断是否开始移动
+            // 鍒ゆ柇鏄惁寮€濮嬬Щ鍔?
             const totalMoveX = Math.abs(touch.clientX - touchState.startX);
             const totalMoveY = Math.abs(touch.clientY - touchState.startY);
 
@@ -890,19 +1116,19 @@ function initTouchMode() {
                 touchState.isMoving = true;
                 touchState.hasMoved = true;
                 cancelPendingClick();
-                // 注意：单指滑动只是移动鼠标，不会自动进入拖拽模式
-                // 拖拽需要通过双击并按住来实现
+                // 娉ㄦ剰锛氬崟鎸囨粦鍔ㄥ彧鏄Щ鍔ㄩ紶鏍囷紝涓嶄細鑷姩杩涘叆鎷栨嫿妯″紡
+                // 鎷栨嫿闇€瑕侀€氳繃鍙屽嚮骞舵寜浣忔潵瀹炵幇
             }
 
-            // 发送鼠标移动（无论是否拖拽，都要移动鼠标）
+            // 鍙戦€侀紶鏍囩Щ鍔紙鏃犺鏄惁鎷栨嫿锛岄兘瑕佺Щ鍔ㄩ紶鏍囷級
             sendRelativeMove(Math.round(dx), Math.round(dy));
 
-            // 更新最后位置
+            // 鏇存柊鏈€鍚庝綅缃?
             touchState.lastX = touch.clientX;
             touchState.lastY = touch.clientY;
 
         } else if (e.touches.length === 2) {
-            // 双指移动 - 滚轮（支持上下左右）
+            // 鍙屾寚绉诲姩 - 婊氳疆锛堟敮鎸佷笂涓嬪乏鍙筹級
             const touch1 = e.touches[0];
             const touch2 = e.touches[1];
             const centerX = (touch1.clientX + touch2.clientX) / 2;
@@ -918,8 +1144,8 @@ function initTouchMode() {
                     touchState.hasMoved = true;
                 }
 
-                // 双指滑动映射为滚轮
-                // 垂直滑动 = 上下滚动，水平滑动 = 左右滚动
+                // 鍙屾寚婊戝姩鏄犲皠涓烘粴杞?
+                // 鍨傜洿婊戝姩 = 涓婁笅婊氬姩锛屾按骞虫粦鍔?= 宸﹀彸婊氬姩
                 const scrollSensitivity = 3;
                 if (Math.abs(deltaX) >= TWO_FINGER_SCROLL_DEADZONE || Math.abs(deltaY) >= TWO_FINGER_SCROLL_DEADZONE) {
                     emit('mouse_scroll', {
@@ -935,7 +1161,7 @@ function initTouchMode() {
         }
     }, { passive: false });
 
-    // 触摸结束
+    // 瑙︽懜缁撴潫
     overlay.addEventListener('touchend', (e) => {
         e.preventDefault();
         if (state.currentMode === 'gamepad') {
@@ -949,9 +1175,9 @@ function initTouchMode() {
         const touchDuration = Date.now() - touchState.startTime;
         const remainingTouches = e.touches.length;
 
-        // 双指检测：如果开始时是双指
+        // 鍙屾寚妫€娴嬶細濡傛灉寮€濮嬫椂鏄弻鎸?
         if (touchState.touchCount === 2) {
-            // 双指点击（没有移动）= 右键
+            // 鍙屾寚鐐瑰嚮锛堟病鏈夌Щ鍔級= 鍙抽敭
             if (touchDuration < TWO_FINGER_TAP_MAX_DURATION && !touchState.hasMoved) {
                 playClickAnimation();
                 emit('mouse_click', { button: 'right', action: 'down' });
@@ -961,14 +1187,14 @@ function initTouchMode() {
             }
 
             if (remainingTouches === 0) {
-                // 所有手指都抬起
+                // 鎵€鏈夋墜鎸囬兘鎶捣
                 state.isTouching = false;
                 touchState.touchCount = 0;
                 touchState.isMoving = false;
                 touchState.hasMoved = false;
                 touchState.isDragging = false;
             } else {
-                // 还剩一根手指，转为单指状态
+                // 杩樺墿涓€鏍规墜鎸囷紝杞负鍗曟寚鐘舵€?
                 touchState.touchCount = 1;
                 const touch = e.touches[0];
                 touchState.startX = touch.clientX;
@@ -981,43 +1207,43 @@ function initTouchMode() {
             return;
         }
 
-        // 单指处理
+        // 鍗曟寚澶勭悊
         if (remainingTouches === 0) {
             const touch = e.changedTouches[0];
             const now = Date.now();
 
             if (touchState.isDragging) {
-                // 拖拽模式结束（双击后按住），抬起左键
+                // 鎷栨嫿妯″紡缁撴潫锛堝弻鍑诲悗鎸変綇锛夛紝鎶捣宸﹂敭
                 emit('mouse_click', { button: 'left', action: 'up' });
                 touchState.leftButtonDown = false;
                 touchState.isDragging = false;
                 touchState.isSecondTap = false;
 
-                // 记录本次点击，但不作为双击的第一次点击（避免三击误判）
+                // 璁板綍鏈鐐瑰嚮锛屼絾涓嶄綔涓哄弻鍑荤殑绗竴娆＄偣鍑伙紙閬垮厤涓夊嚮璇垽锛?
                 lastTapTime = 0;
                 lastTapX = 0;
                 lastTapY = 0;
             } else if (touchState.leftButtonDown) {
-                // 确保左键抬起
+                // 纭繚宸﹂敭鎶捣
                 emit('mouse_click', { button: 'left', action: 'up' });
                 touchState.leftButtonDown = false;
             } else if (!touchState.hasMoved && touchDuration < 300 && touchState.pendingClick) {
-                // 短按且没有移动，且有待确认的单击
-                // 让 timer 去处理单击（延迟执行）
-                // 记录本次点击用于双击检测
+                // 鐭寜涓旀病鏈夌Щ鍔紝涓旀湁寰呯‘璁ょ殑鍗曞嚮
+                // 璁?timer 鍘诲鐞嗗崟鍑伙紙寤惰繜鎵ц锛?
+                // 璁板綍鏈鐐瑰嚮鐢ㄤ簬鍙屽嚮妫€娴?
                 lastTapTime = now;
                 lastTapX = touch.clientX;
                 lastTapY = touch.clientY;
             } else if (!touchState.hasMoved && touchDuration >= 300) {
-                // 长按没有移动，执行单击（取消待处理状态直接执行）
+                // 闀挎寜娌℃湁绉诲姩锛屾墽琛屽崟鍑伙紙鍙栨秷寰呭鐞嗙姸鎬佺洿鎺ユ墽琛岋級
                 cancelPendingClick();
                 doClick();
             } else {
-                // 移动了，取消单击
+                // 绉诲姩浜嗭紝鍙栨秷鍗曞嚮
                 cancelPendingClick();
             }
 
-            // 重置状态
+            // 閲嶇疆鐘舵€?
             state.isTouching = false;
             touchState.touchCount = 0;
             touchState.isMoving = false;
@@ -1034,7 +1260,7 @@ function initTouchMode() {
     }, { passive: false });
 }
 
-// ============ 游戏手柄模式 ============
+// ============ 娓告垙鎵嬫焺妯″紡 ============
 function initGamepadMode() {
     initVirtualStick('left-stick', (x, y) => {
         emit('gamepad_input', { type: 'movement', x: x, y: y });
@@ -1204,7 +1430,7 @@ function initPhysicalGamepadForwarding() {
         const gp = getActivePad();
         if (!gp || !gp.connected) {
             state.physicalGamepad.missCount = (state.physicalGamepad.missCount || 0) + 1;
-            // 避免浏览器偶发一帧拿不到手柄就断开
+            // 閬垮厤娴忚鍣ㄥ伓鍙戜竴甯ф嬁涓嶅埌鎵嬫焺灏辨柇寮€
             if (state.physicalGamepad.connected && state.physicalGamepad.missCount > 30) {
                 disconnectNow(false);
             }
@@ -1216,7 +1442,7 @@ function initPhysicalGamepadForwarding() {
             connectIfPossible(gp);
             if (!state.physicalGamepad.connected) return;
         } else {
-            // 心跳重连：修复模式切回后服务端 owner 丢失导致无响应
+            // 蹇冭烦閲嶈繛锛氫慨澶嶆ā寮忓垏鍥炲悗鏈嶅姟绔?owner 涓㈠け瀵艰嚧鏃犲搷搴?
             const nowConnect = Date.now();
             if (!state.physicalGamepad.lastConnectAt || (nowConnect - state.physicalGamepad.lastConnectAt) > 1500) {
                 state.physicalGamepad.lastConnectAt = nowConnect;
@@ -1316,7 +1542,7 @@ function initPhysicalGamepadForwarding() {
         disconnectNow();
     });
 
-    // 常驻轮询（16ms）：比 RAF 在移动端模式切换时更稳定
+    // 甯搁┗杞锛?6ms锛夛細姣?RAF 鍦ㄧЩ鍔ㄧ妯″紡鍒囨崲鏃舵洿绋冲畾
     if (state.physicalGamepad.pollTimer === null) {
         state.physicalGamepad.pollTimer = setInterval(pollOnce, 16);
     }
@@ -1424,7 +1650,7 @@ function initVirtualStick(elementId, callback, isMouseStick = false) {
     }
 }
 
-// ============ 键盘模式 ============
+// ============ 閿洏妯″紡 ============
 function initKeyboardMode() {
     const keys = document.querySelectorAll('.kb-key');
     const pressedKeys = new Set();
@@ -1436,7 +1662,7 @@ function initKeyboardMode() {
             e.preventDefault();
             key.classList.add('pressed');
 
-            // 特殊处理锁定键
+            // 鐗规畩澶勭悊閿佸畾閿?
             if (keyName === 'CapsLock') {
                 key.classList.toggle('locked');
             }
@@ -1449,20 +1675,20 @@ function initKeyboardMode() {
             e.preventDefault();
             key.classList.remove('pressed');
 
-            // CapsLock 和其他锁定键不需要发送 up 事件（它会保持状态）
+            // CapsLock 鍜屽叾浠栭攣瀹氶敭涓嶉渶瑕佸彂閫?up 浜嬩欢锛堝畠浼氫繚鎸佺姸鎬侊級
             if (keyName !== 'CapsLock') {
                 emit('key_event', { key: keyName, action: 'up' });
             }
             pressedKeys.delete(keyName);
         });
 
-        // 防止触摸时触发默认行为
+        // 闃叉瑙︽懜鏃惰Е鍙戦粯璁よ涓?
         key.addEventListener('touchmove', (e) => {
             e.preventDefault();
         }, { passive: false });
     });
 
-    // 防止键盘区域的默认触摸行为
+    // 闃叉閿洏鍖哄煙鐨勯粯璁よЕ鎽歌涓?
     const keyboardControls = document.getElementById('keyboard-controls');
     if (keyboardControls) {
         keyboardControls.addEventListener('touchstart', (e) => {
@@ -1561,7 +1787,7 @@ function initHardwareKeyboardForwarding() {
     }
 
     function tapSystemKey(remoteKey) {
-        // 组合键替代时，避免被 Ctrl 修饰成 Ctrl+Esc / Ctrl+Win。
+        // 缁勫悎閿浛浠ｆ椂锛岄伩鍏嶈 Ctrl 淇グ鎴?Ctrl+Esc / Ctrl+Win銆?
         const hadControl = hasHeldControlKey();
         if (hadControl) {
             sendKey('Control', 'up');
@@ -1606,7 +1832,7 @@ function initHardwareKeyboardForwarding() {
         if (!normalizedKey) return;
         const keyId = keyIdForEvent(e, normalizedKey);
 
-        // 替代系统键：
+        // 鏇夸唬绯荤粺閿細
         // Ctrl + 1 => Esc
         // Ctrl + 2 => Win
         if (isCtrlShortcutTrigger(e, normalizedKey, 1)) {
@@ -1631,7 +1857,7 @@ function initHardwareKeyboardForwarding() {
         if (activeKeys.has(keyId)) {
             const remoteKey = activeKeys.get(keyId);
             if (e.repeat && isRepeatableKey(remoteKey)) {
-                // 浏览器自身已提供 repeat 时，停用本地 repeat 以免双倍触发。
+                // 娴忚鍣ㄨ嚜韬凡鎻愪緵 repeat 鏃讹紝鍋滅敤鏈湴 repeat 浠ュ厤鍙屽€嶈Е鍙戙€?
                 stopKeyRepeat(keyId);
                 sendKey(remoteKey, 'down');
             }
@@ -1674,7 +1900,7 @@ function initHardwareKeyboardForwarding() {
     });
 }
 
-// ============ 模式切换 ============
+// ============ 妯″紡鍒囨崲 ============
 function initModeSwitching() {
     const modeBtns = document.querySelectorAll('.mode-btn');
     const touchOverlay = document.getElementById('touch-overlay');
@@ -1684,15 +1910,15 @@ function initModeSwitching() {
     const globalSettings = document.getElementById('global-settings');
 
     const modeNames = {
-        'touch': '触控模式',
-        'gamepad': '游戏模式',
-        'controller': '手柄模式'
+        'touch': '瑙︽帶妯″紡',
+        'gamepad': '娓告垙妯″紡',
+        'controller': '鎵嬫焺妯″紡'
     };
 
     const modeDescs = {
-        'touch': '触控板模式：单指移动=光标，单指点击=左键，双击并按住=拖拽，双指点击=右键，双指滑动=滚轮，Ctrl+1=Esc，Ctrl+2=Win',
-        'gamepad': '左摇杆=WASD，右侧滑动=视角，右侧按钮=技能/普攻，Alt=长按切换',
-        'controller': '使用蓝牙手柄直通电脑端（虚拟 Xbox 手柄），游戏会自动切换原生手柄 UI'
+        'touch': '瑙︽帶鏉挎ā寮忥細鍗曟寚绉诲姩=鍏夋爣锛屽崟鎸囩偣鍑?宸﹂敭锛屽弻鍑诲苟鎸変綇=鎷栨嫿锛屽弻鎸囩偣鍑?鍙抽敭锛屽弻鎸囨粦鍔?婊氳疆锛孋trl+1=Esc锛孋trl+2=Win',
+        'gamepad': '宸︽憞鏉?WASD锛屽彸渚ф粦鍔?瑙嗚锛屽彸渚ф寜閽?鎶€鑳?鏅敾锛孉lt=闀挎寜鍒囨崲',
+        'controller': '浣跨敤钃濈墮鎵嬫焺鐩撮€氱數鑴戠锛堣櫄鎷?Xbox 鎵嬫焺锛夛紝娓告垙浼氳嚜鍔ㄥ垏鎹㈠師鐢熸墜鏌?UI'
     };
 
     modeBtns.forEach(btn => {
@@ -1705,20 +1931,20 @@ function initModeSwitching() {
 
             state.currentMode = mode;
 
-            // 更新指示器
+            // 鏇存柊鎸囩ず鍣?
             modeIndicator.textContent = modeNames[mode];
             if (modeDescription) {
                 modeDescription.textContent = modeDescs[mode];
             }
 
-            // 通知服务端模式切换
+            // 閫氱煡鏈嶅姟绔ā寮忓垏鎹?
             emit('set_mode', { mode: mode });
 
             if (prevMode === 'gamepad' && mode !== 'gamepad') {
                 releaseGamepadToggles();
             }
 
-            // 切换游戏模式设置显示
+            // 鍒囨崲娓告垙妯″紡璁剧疆鏄剧ず
             const gameModeSettings = document.getElementById('game-mode-settings');
             if (gameModeSettings) {
                 if (mode === 'gamepad') {
@@ -1728,14 +1954,14 @@ function initModeSwitching() {
                 }
             }
 
-            // 更新鼠标红点显示状态
+            // 鏇存柊榧犳爣绾㈢偣鏄剧ず鐘舵€?
             updateCursorDotVisibility();
 
             if (state.physicalGamepad && typeof state.physicalGamepad.setEnabled === 'function') {
                 state.physicalGamepad.setEnabled(mode === 'controller');
             }
 
-            // 切换显示
+            // 鍒囨崲鏄剧ず
             switch (mode) {
                 case 'touch':
                     touchOverlay.style.display = 'block';
@@ -1757,7 +1983,7 @@ function initModeSwitching() {
     });
 }
 
-// ============ 设置面板 ============
+// ============ 璁剧疆闈㈡澘 ============
 function initSettings() {
     const settingsBtn = document.getElementById('settings-btn');
     const settingsPanel = document.getElementById('settings-panel');
@@ -1765,7 +1991,7 @@ function initSettings() {
     const fullscreenBtn = document.getElementById('fullscreen-btn');
     const fullscreenText = document.getElementById('fullscreen-text');
 
-    // 画质滑块
+    // 鐢昏川婊戝潡
     const qualitySlider = document.getElementById('quality-slider');
     const qualityValue = document.getElementById('quality-value');
     qualityValue.textContent = qualitySlider.value;
@@ -1774,7 +2000,7 @@ function initSettings() {
         emit('set_quality', { quality: parseInt(qualitySlider.value) });
     });
 
-    // 帧率滑块
+    // 甯х巼婊戝潡
     const fpsSlider = document.getElementById('fps-slider');
     const fpsValue = document.getElementById('fps-value');
     fpsValue.textContent = fpsSlider.value;
@@ -1783,7 +2009,7 @@ function initSettings() {
         emit('set_fps', { fps: parseInt(fpsSlider.value) });
     });
 
-    // 灵敏度滑块
+    // 鐏垫晱搴︽粦鍧?
     const sensitivitySlider = document.getElementById('sensitivity-slider');
     const sensitivityValue = document.getElementById('sensitivity-value');
     CONFIG.mouseSensitivity = parseFloat(sensitivitySlider.value);
@@ -1805,7 +2031,7 @@ function initSettings() {
                 if (keyboardToggleBtn.tagName === 'INPUT') {
                     keyboardToggleBtn.checked = true;
                 } else {
-                    keyboardToggleBtn.textContent = '收起';
+                    keyboardToggleBtn.textContent = '鏀惰捣';
                     keyboardToggleBtn.classList.add('active');
                 }
                 if (keyboardToggleText) keyboardToggleText.textContent = '开启';
@@ -1814,10 +2040,10 @@ function initSettings() {
                 if (keyboardToggleBtn.tagName === 'INPUT') {
                     keyboardToggleBtn.checked = false;
                 } else {
-                    keyboardToggleBtn.textContent = '唤出';
+                    keyboardToggleBtn.textContent = '鍞ゅ嚭';
                     keyboardToggleBtn.classList.remove('active');
                 }
-                if (keyboardToggleText) keyboardToggleText.textContent = '关闭';
+                if (keyboardToggleText) keyboardToggleText.textContent = '鍏抽棴';
             }
         };
         applyKeyboardVisible(false);
@@ -1832,19 +2058,19 @@ function initSettings() {
         }
     }
 
-    // 低延迟模式
+    // 浣庡欢杩熸ā寮?
     const lowLatencyCheckbox = document.getElementById('low-latency-mode');
     if (lowLatencyCheckbox) {
         lowLatencyCheckbox.addEventListener('change', () => {
             CONFIG.lowLatencyMode = lowLatencyCheckbox.checked;
-            debugLog('[Config] 低延迟模式:', CONFIG.lowLatencyMode);
+            debugLog('[Config] 浣庡欢杩熸ā寮?', CONFIG.lowLatencyMode);
         });
     }
 
-    // 游戏模式专用设置
+    // 娓告垙妯″紡涓撶敤璁剧疆
     initGameModeSettings();
 
-    // 全屏
+    // 鍏ㄥ睆
     if (fullscreenBtn) {
         const syncFullscreenUI = () => {
             const active = !!document.fullscreenElement;
@@ -1882,7 +2108,7 @@ function initSettings() {
         }
     }
 
-    // 打开/关闭设置
+    // 鎵撳紑/鍏抽棴璁剧疆
     settingsBtn.addEventListener('click', () => {
         settingsPanel.classList.remove('hidden');
     });
@@ -1891,7 +2117,7 @@ function initSettings() {
         settingsPanel.classList.add('hidden');
     });
 
-    // 点击面板外部关闭
+    // 鐐瑰嚮闈㈡澘澶栭儴鍏抽棴
     settingsPanel.addEventListener('click', (e) => {
         if (e.target === settingsPanel) {
             settingsPanel.classList.add('hidden');
@@ -1899,14 +2125,14 @@ function initSettings() {
     });
 }
 
-// ============ 辅助函数 ============
+// ============ 杈呭姪鍑芥暟 ============
 function emit(event, data) {
     if (state.connected && state.socket) {
         state.socket.emit(event, data);
     }
 }
 
-// FPS 计算
+// FPS 璁＄畻
 function updateFPS() {
     state.frameCount++;
     const now = Date.now();
@@ -1919,7 +2145,8 @@ function updateFPS() {
             const displayFps = state.webrtc.using ? state.videoFps : state.fps;
             if (state.webrtc.using) {
                 const mbps = state.webrtcStats.bitrateMbps || 0;
-                fpsEl.textContent = displayFps + ' FPS ' + mbps.toFixed(1) + ' Mbps';
+                const akbps = state.webrtcStats.audioKbps || 0;
+                fpsEl.textContent = displayFps + ' FPS ' + mbps.toFixed(1) + ' Mbps A:' + akbps.toFixed(0) + 'kbps';
             } else {
                 fpsEl.textContent = displayFps + ' FPS';
             }
@@ -1931,9 +2158,9 @@ function updateFPS() {
     requestAnimationFrame(updateFPS);
 }
 
-// ============ 游戏模式设置 ============
+// ============ 娓告垙妯″紡璁剧疆 ============
 function initGameModeSettings() {
-    // 视角灵敏度滑块
+    // 瑙嗚鐏垫晱搴︽粦鍧?
     const cameraSensitivitySlider = document.getElementById('camera-sensitivity-slider');
     const cameraSensitivityValue = document.getElementById('camera-sensitivity-value');
     if (cameraSensitivitySlider && cameraSensitivityValue) {
@@ -1943,7 +2170,7 @@ function initGameModeSettings() {
             const value = parseInt(cameraSensitivitySlider.value);
             cameraSensitivityValue.textContent = value;
             CONFIG.gameMode.cameraSensitivity = value;
-            debugLog('[Config] 视角灵敏度:', value);
+            debugLog('[Config] 瑙嗚鐏垫晱搴?', value);
         });
     }
 
@@ -1954,7 +2181,7 @@ function initGameModeSettings() {
             const value = parseFloat(pinchSensitivitySlider.value);
             pinchSensitivityValue.textContent = value.toFixed(2).replace(/\.00$/, '');
             CONFIG.gameMode.pinchSensitivity = value;
-            debugLog('[Config] 双指缩放灵敏度:', value);
+            debugLog('[Config] 鍙屾寚缂╂斁鐏垫晱搴?', value);
         });
     }
 
@@ -1971,20 +2198,20 @@ function initGameModeSettings() {
         });
     }
 
-    // 显示鼠标红点开关
+    // 鏄剧ず榧犳爣绾㈢偣寮€鍏?
     const showCursorDotCheckbox = document.getElementById('show-cursor-dot');
     const cursorDotStatus = document.getElementById('cursor-dot-status');
     if (showCursorDotCheckbox && cursorDotStatus) {
         showCursorDotCheckbox.addEventListener('change', () => {
             CONFIG.gameMode.showCursorDot = showCursorDotCheckbox.checked;
-            cursorDotStatus.textContent = showCursorDotCheckbox.checked ? '显示' : '隐藏';
+            cursorDotStatus.textContent = showCursorDotCheckbox.checked ? '鏄剧ず' : '闅愯棌';
             updateCursorDotVisibility();
-            debugLog('[Config] 显示鼠标红点:', CONFIG.gameMode.showCursorDot);
+            debugLog('[Config] 鏄剧ず榧犳爣绾㈢偣:', CONFIG.gameMode.showCursorDot);
         });
     }
 }
 
-// 更新鼠标红点显示状态
+// 鏇存柊榧犳爣绾㈢偣鏄剧ず鐘舵€?
 function updateCursorDotVisibility() {
     const virtualCursor = document.getElementById('virtual-cursor');
     if (!virtualCursor) return;
@@ -1995,25 +2222,25 @@ function updateCursorDotVisibility() {
         return;
     }
 
-    // 游戏模式下根据设置决定是否显示红点
+    // 娓告垙妯″紡涓嬫牴鎹缃喅瀹氭槸鍚︽樉绀虹孩鐐?
     if (state.currentMode === 'gamepad') {
         virtualCursor.classList.remove('game-mode-cursor');
         if (CONFIG.gameMode.showCursorDot) {
-            // 显示红点但使用半透明样式，减少视觉干扰
+            // 鏄剧ず绾㈢偣浣嗕娇鐢ㄥ崐閫忔槑鏍峰紡锛屽噺灏戣瑙夊共鎵?
             virtualCursor.classList.add('game-mode-cursor');
             virtualCursor.classList.remove('hidden');
         } else {
-            // 完全隐藏红点
+            // 瀹屽叏闅愯棌绾㈢偣
             virtualCursor.classList.add('hidden');
         }
     } else {
-        // 非游戏模式，移除游戏模式样式
+        // 闈炴父鎴忔ā寮忥紝绉婚櫎娓告垙妯″紡鏍峰紡
         virtualCursor.classList.remove('game-mode-cursor');
-        // 触控模式下由 updateVirtualCursorDisplay 控制显示
+        // 瑙︽帶妯″紡涓嬬敱 updateVirtualCursorDisplay 鎺у埗鏄剧ず
     }
 }
 
-// ============ 初始化 ============
+// ============ 鍒濆鍖?============
 // Override: stable physical gamepad forwarding implementation.
 function initPhysicalGamepadForwarding() {
     if (typeof navigator === 'undefined' || typeof navigator.getGamepads !== 'function') return;
@@ -2257,6 +2484,7 @@ function initPhysicalGamepadForwarding() {
 
 function init() {
     initSocket();
+    initAudioUnlockControls();
     initTouchMode();
     initGamepadMode();
     initPhysicalGamepadForwarding();
@@ -2266,7 +2494,7 @@ function init() {
     initSettings();
     updateFPS();
 
-    // 防止页面滚动和缩放
+    // 闃叉椤甸潰婊氬姩鍜岀缉鏀?
     document.addEventListener('touchmove', (e) => {
         if (e.target.closest('#touch-overlay') ||
             e.target.closest('.virtual-stick') ||
@@ -2282,7 +2510,7 @@ function init() {
     document.addEventListener('gesturechange', (e) => e.preventDefault());
     document.addEventListener('gestureend', (e) => e.preventDefault());
 
-    // 防止双击缩放
+    // 闃叉鍙屽嚮缂╂斁
     let lastTouchEnd = 0;
     document.addEventListener('touchend', (e) => {
         const now = Date.now();
@@ -2292,8 +2520,9 @@ function init() {
         lastTouchEnd = now;
     }, false);
 
-    debugLog('[App] 初始化完成，低延迟模式:', CONFIG.lowLatencyMode);
+    debugLog('[App] 鍒濆鍖栧畬鎴愶紝浣庡欢杩熸ā寮?', CONFIG.lowLatencyMode);
 }
 
-// 页面加载完成后初始化
+// 椤甸潰鍔犺浇瀹屾垚鍚庡垵濮嬪寲
 document.addEventListener('DOMContentLoaded', init);
+

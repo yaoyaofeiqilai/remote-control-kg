@@ -74,6 +74,20 @@ body {
     background: #e74c3c;
 }
 
+#audio-unlock-btn {
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    background: rgba(231, 76, 60, 0.85);
+    color: #fff;
+    border-radius: 4px;
+    font-size: 11px;
+    line-height: 1;
+    padding: 4px 8px;
+}
+
+#audio-unlock-btn.hidden {
+    display: none;
+}
+
 #fps-counter {
     color: #888;
 }
@@ -104,6 +118,10 @@ body {
     max-height: 100%;
     object-fit: contain;
     pointer-events: none;
+}
+
+#remote-audio {
+    display: none;
 }
 
 #touch-overlay {

@@ -40,7 +40,7 @@ echo [INFO] Python runtime:
 call %PY_CMD% --version
 
 echo [INFO] Verifying dependencies...
-call %PY_CMD% -c "import flask, flask_socketio, flask_cors, pyautogui, PIL, mss, numpy" >nul 2>&1
+call %PY_CMD% -c "import flask, flask_socketio, flask_cors, pyautogui, PIL, mss, numpy, sounddevice, aiortc, av, aiohttp" >nul 2>&1
 if errorlevel 1 (
     echo [WARN] Missing dependencies. Installing from requirements.txt...
     call %PY_CMD% -m pip install --disable-pip-version-check -r requirements.txt

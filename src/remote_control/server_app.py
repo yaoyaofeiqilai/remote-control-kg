@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-远程控制服务端 - Windows电脑端运行
-提供屏幕捕获和输入控制服务
+Remote control server for Windows hosts.
+Provides screen capture and input control over web.
 """
 
 import asyncio
@@ -10,28 +10,65 @@ import ctypes
 import io
 import json
 import os
+import queue
 import sys
 import threading
 import time
 from collections import deque
 from datetime import datetime
+from fractions import Fraction
 
 import mss
 import numpy as np
 
 DEBUG_LOG_ENABLED = os.getenv("RC_DEBUG", "0") == "1"
 
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")
+    except Exception:
+        pass
+
 
 def debug_log(message):
     if DEBUG_LOG_ENABLED:
         print(message)
 
-# 尝试导入 DXGI 捕获库（延迟导入，避免启动时崩溃）
+
+def _env_flag(name, default):
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in ("0", "false", "off", "no")
+
+
+def _env_int(name, default, minimum, maximum):
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except Exception:
+        return default
+    return max(minimum, min(maximum, value))
+
+
+def _env_float(name, default, minimum, maximum):
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except Exception:
+        return default
+    return max(minimum, min(maximum, value))
+
+# Cleaned garbled comment.
 DXCAM_AVAILABLE = False
 dxcam = None
 
 def load_dxcam():
-    """延迟加载 dxcam，避免启动时因 numpy 问题崩溃"""
+    """Lazy-load dxcam to avoid startup-time import crashes."""
     global DXCAM_AVAILABLE, dxcam
     try:
         import warnings
@@ -41,15 +78,15 @@ def load_dxcam():
         DXCAM_AVAILABLE = True
         return True
     except Exception as e:
-        print(f"[DXGI] 加载失败: {e}")
+        print(f"[DXGI] load failed: {e}")
         return False
 
-# 导入 PIL
+# Cleaned garbled comment.
 try:
     from PIL import Image, ImageDraw, ImageFont
 except ImportError as e:
-    print(f"[错误] 无法导入 Pillow: {e}")
-    print("请运行: python -m pip install Pillow")
+    print(f"[Error] Failed to import Pillow: {e}")
+    print("Run: python -m pip install Pillow")
     exit(1)
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -62,13 +99,13 @@ from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 import pyautogui
 
-# 导入底层输入模块
+# Cleaned garbled comment.
 try:
     from .input_sender import get_input_sender, InputSender
     INPUT_SENDER_AVAILABLE = True
-    print("[输入] 底层 SendInput API 可用")
+    print("[Input] low-level SendInput API available")
 except Exception as e:
-    print(f"[输入] 底层 SendInput API 加载失败: {e}")
+    print(f"[Input] failed to load low-level SendInput API: {e}")
     INPUT_SENDER_AVAILABLE = False
 
 XINPUT_AVAILABLE = False
@@ -81,54 +118,99 @@ try:
         XUSB_BUTTON = vg.XUSB_BUTTON
         XINPUT_AVAILABLE = True
 except Exception as e:
-    print(f"[手柄] vgamepad 未启用: {e}")
+    print(f"[Gamepad] vgamepad unavailable: {e}")
 
 WEBRTC_AVAILABLE = False
 try:
     from aiortc import RTCPeerConnection, RTCSessionDescription
     from aiortc.rtcrtpsender import RTCRtpSender
-    from aiortc.mediastreams import VideoStreamTrack
-    from av import VideoFrame
+    from aiortc.mediastreams import AudioStreamTrack, VideoStreamTrack
+    from av import AudioFrame, VideoFrame
     WEBRTC_AVAILABLE = True
 except Exception as e:
-    print(f"[WebRTC] 依赖加载失败: {e}")
+    print(f"[WebRTC] dependency load failed: {e}")
 
-# 配置
+# Cleaned garbled comment.
 STATIC_DIR = os.path.join(PROJECT_ROOT, 'static')
 TEMPLATE_DIR = os.path.join(PROJECT_ROOT, 'templates')
 app = Flask(__name__, static_folder=STATIC_DIR, template_folder=TEMPLATE_DIR)
 CORS(app)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading', logger=False, engineio_logger=False)
 
-# 设置 pyautogui 安全模式（防止失控）
+SOUNDDEVICE_AVAILABLE = False
+sd = None
+try:
+    import sounddevice as _sd
+    sd = _sd
+    SOUNDDEVICE_AVAILABLE = True
+except Exception as e:
+    print(f"[Audio] sounddevice load failed: {e}")
+
+# Cleaned garbled comment.
 pyautogui.FAILSAFE = True
 pyautogui.PAUSE = 0.01
 
-# 全局状态
+# Cleaned garbled comment.
 connected_clients = 0
 screen_capture_running = False
-quality = 60  # 图像质量 1-95
-fps = 30      # 目标帧率
+quality = 60  # Cleaned garbled comment.
+fps = 30  # Cleaned garbled comment.
 
 webrtc_enabled = True
-webrtc_target_fps = 60
-webrtc_scale = 0.5
+webrtc_target_fps = _env_int("RC_WEBRTC_FPS", 24, 5, 60)
+_screen_size = pyautogui.size()
+webrtc_scale = _env_float("RC_WEBRTC_SCALE", 1.0, 0.25, 1.0)
+webrtc_max_width = _env_int("RC_WEBRTC_MAX_WIDTH", int(_screen_size.width), 320, 7680)
+webrtc_max_height = _env_int("RC_WEBRTC_MAX_HEIGHT", int(_screen_size.height), 240, 4320)
 webrtc_peers = {}
+webrtc_audio_tracks = {}
 webrtc_loop = None
 webrtc_loop_thread = None
 webrtc_frame_pump = None
 
-# DXGI 相机实例
+audio_enabled = _env_flag("RC_AUDIO_ENABLED", True)
+audio_device_name = (os.getenv("RC_AUDIO_DEVICE_NAME", "CABLE Output") or "").strip()
+audio_sample_rate = _env_int("RC_AUDIO_SAMPLE_RATE", 48000, 8000, 192000)
+audio_channels = _env_int("RC_AUDIO_CHANNELS", 2, 1, 2)
+audio_frame_ms = _env_int("RC_AUDIO_FRAME_MS", 20, 10, 120)
+audio_debug = _env_flag("RC_AUDIO_DEBUG", False)
+audio_frame_samples = max(80, int(audio_sample_rate * audio_frame_ms / 1000))
+
+audio_status_lock = threading.Lock()
+audio_status = {
+    "enabled": bool(audio_enabled),
+    "sounddevice_available": bool(SOUNDDEVICE_AVAILABLE),
+    "webrtc_available": bool(WEBRTC_AVAILABLE),
+    "device_name_hint": audio_device_name,
+    "sample_rate": int(audio_sample_rate),
+    "channels": int(audio_channels),
+    "frame_ms": int(audio_frame_ms),
+    "frame_samples": int(audio_frame_samples),
+    "selected_device": None,
+    "device_index": None,
+    "capture_running": False,
+    "frames_generated": 0,
+    "dropped_frames": 0,
+    "discontinuities": 0,
+    "last_rms": 0.0,
+    "last_frame_ts": 0.0,
+    "last_error": "",
+    "client_stats": {},
+}
+if audio_enabled and not SOUNDDEVICE_AVAILABLE:
+    audio_status["last_error"] = "sounddevice_unavailable"
+
+# Cleaned garbled comment.
 dxgi_camera = None
-dxgi_capture_enabled = False  # 默认禁用，通过参数或API启用
+dxgi_capture_enabled = False  # Cleaned garbled comment.
 dxgi_lock = threading.RLock()
 dxgi_failure_count = 0
 dxgi_retry_after = 0.0
 
 mss_local = threading.local()
 
-# 输入模式
-game_mode = False  # 游戏模式：使用底层 SendInput，禁用鼠标同步
+# Cleaned garbled comment.
+game_mode = False  # Cleaned garbled comment.
 input_sender = None
 if INPUT_SENDER_AVAILABLE:
     input_sender = get_input_sender()
@@ -146,6 +228,137 @@ xinput_apply_count = 0
 xinput_apply_nonzero = 0
 xinput_apply_last_log = 0.0
 
+
+def _audio_set_status(**kwargs):
+    with audio_status_lock:
+        audio_status.update(kwargs)
+
+
+def _audio_inc(field, delta=1):
+    with audio_status_lock:
+        audio_status[field] = int(audio_status.get(field, 0)) + int(delta)
+
+
+def _audio_set_error(message):
+    _audio_set_status(last_error=str(message or ""))
+
+
+def _audio_snapshot():
+    with audio_status_lock:
+        return dict(audio_status)
+
+
+def _audio_list_input_devices():
+    if not SOUNDDEVICE_AVAILABLE or sd is None:
+        return []
+
+    devices = []
+    try:
+        hostapis = sd.query_hostapis()
+        all_devices = sd.query_devices()
+    except Exception as e:
+        _audio_set_error(f"query_devices_failed: {e}")
+        return []
+
+    for idx, dev in enumerate(all_devices):
+        max_input = int(dev.get("max_input_channels", 0) or 0)
+        if max_input <= 0:
+            continue
+
+        hostapi_name = ""
+        hostapi_idx = dev.get("hostapi", None)
+        if isinstance(hostapi_idx, int) and 0 <= hostapi_idx < len(hostapis):
+            hostapi_name = str(hostapis[hostapi_idx].get("name", ""))
+
+        devices.append({
+            "index": int(idx),
+            "name": str(dev.get("name", "")),
+            "hostapi": hostapi_name,
+            "max_input_channels": max_input,
+            "default_samplerate": float(dev.get("default_samplerate", 0.0) or 0.0),
+        })
+
+    return devices
+
+
+def _audio_select_input_device(devices):
+    if not devices:
+        raise RuntimeError("no_input_device")
+
+    hint = (audio_device_name or "").strip().lower()
+    def _score_device(dev):
+        name = dev["name"].lower()
+        hostapi = dev["hostapi"].lower()
+        score = 0
+
+        # Best candidates for system output capture.
+        if "cable output" in name:
+            score += 700
+        if "vb-audio" in name or "vb cable" in name or "cable" in name:
+            score += 350
+
+        loopback_tokens = (
+            "stereo mix",
+            "立体声混音",
+            "loopback",
+            "what u hear",
+            "wave out mix",
+            "monitor of",
+        )
+        if any(tok in name for tok in loopback_tokens):
+            score += 500
+
+        # Prefer APIs that usually expose better capture behavior on Windows.
+        if "wasapi" in hostapi:
+            score += 60
+        if "wdm" in hostapi:
+            score += 40
+        if "mme" in hostapi:
+            score += 10
+
+        # Avoid choosing microphones by default.
+        mic_tokens = ("microphone", "mic", "麦克风", "阵列", "array")
+        if any(tok in name for tok in mic_tokens):
+            score -= 200
+
+        score += min(int(dev.get("max_input_channels", 0) or 0), 2) * 8
+        if float(dev.get("default_samplerate", 0.0) or 0.0) >= 48000.0:
+            score += 15
+        return score
+
+    matched = []
+    for dev in devices:
+        name = dev["name"].lower()
+        if hint and hint not in name:
+            continue
+        matched.append((_score_device(dev), dev))
+
+    if hint and not matched:
+        _audio_set_error(f"device_not_found_fallback: hint={audio_device_name}")
+
+    if not matched:
+        for dev in devices:
+            matched.append((_score_device(dev), dev))
+
+    matched.sort(key=lambda item: item[0], reverse=True)
+    return matched[0][1]
+
+
+def _audio_rank_input_devices(devices):
+    ranked = []
+    tmp_devices = list(devices)
+    seen = set()
+    while tmp_devices:
+        selected = _audio_select_input_device(tmp_devices)
+        idx = int(selected.get("index", -1))
+        if idx in seen:
+            break
+        seen.add(idx)
+        ranked.append(selected)
+        tmp_devices = [d for d in tmp_devices if int(d.get("index", -1)) != idx]
+    return ranked
+
+
 def is_running_as_admin():
     try:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
@@ -153,14 +366,14 @@ def is_running_as_admin():
         return False
 
 if not is_running_as_admin():
-    print("[提示] 当前未以管理员权限运行：对管理员权限窗口的鼠标/按键注入可能会失效")
-    print("[提示] 请使用 start_admin.bat 以管理员模式启动")
+    print("[Hint] Not running as administrator: input injection on elevated windows may fail.")
+    print("[Hint] Please use start_admin.bat to launch in administrator mode.")
 
 def init_dxgi_camera():
-    """初始化 DXGI 相机"""
+    """Initialize DXGI camera."""
     global dxgi_camera, dxcam, dxgi_failure_count, dxgi_retry_after
 
-    # 延迟加载 dxcam
+    # Cleaned garbled comment.
     if dxcam is None and not load_dxcam():
         return False
 
@@ -169,7 +382,7 @@ def init_dxgi_camera():
             return True
 
         try:
-            # 创建 DXGI 相机实例
+            # Cleaned garbled comment.
             try:
                 dxgi_camera = dxcam.create(output_color="RGB")
             except TypeError:
@@ -181,15 +394,15 @@ def init_dxgi_camera():
                 pass
             dxgi_failure_count = 0
             dxgi_retry_after = 0.0
-            print(f"[DXGI] 相机初始化成功，输出分辨率: {dxgi_camera.width}x{dxgi_camera.height}")
+            print(f"[DXGI] camera initialized, output={dxgi_camera.width}x{dxgi_camera.height}")
             return True
         except Exception as e:
-            print(f"[DXGI] 初始化失败: {e}")
+            print(f"[DXGI] initialization failed: {e}")
             dxgi_camera = None
             return False
 
 def release_dxgi_camera():
-    """释放 DXGI 相机"""
+    """Release DXGI camera."""
     global dxgi_camera
     with dxgi_lock:
         if dxgi_camera:
@@ -200,19 +413,19 @@ def release_dxgi_camera():
                     except Exception:
                         pass
                 dxgi_camera.release()
-                print("[DXGI] 相机已释放")
+                print("[DXGI] camera released")
             except Exception as e:
-                print(f"[DXGI] 释放失败: {e}")
+                print(f"[DXGI] release failed: {e}")
             dxgi_camera = None
 
 
 def handle_dxgi_error(err):
-    """记录 DXGI 错误并进入退避，避免失败后高频重建导致屏闪。"""
+    """Record DXGI failures and back off before retry."""
     global dxgi_failure_count, dxgi_retry_after
     dxgi_failure_count = min(dxgi_failure_count + 1, 8)
     backoff = min(30.0, float(2 ** (dxgi_failure_count - 1)))
     dxgi_retry_after = time.time() + backoff
-    print(f"[DXGI Error] {err}, 回退到 mss，{backoff:.0f}s 后重试")
+    print(f"[DXGI Error] {err}, fallback to MSS, retry in {backoff:.0f}s")
     release_dxgi_camera()
 
 
@@ -223,7 +436,7 @@ def should_try_dxgi():
 
 
 def get_local_ip():
-    """获取本机局域网IP"""
+    """Return local LAN IP."""
     import socket
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -247,23 +460,23 @@ def get_mss():
 
 
 def capture_screen():
-    """捕获屏幕 - 优先使用 DXGI，失败时回退到 mss"""
+    """Cleaned garbled docstring."""
     global dxgi_camera
 
-    # 尝试使用 DXGI 捕获
+    # Cleaned garbled comment.
     if should_try_dxgi():
         try:
-            # 延迟初始化相机
+            # Cleaned garbled comment.
             with dxgi_lock:
                 if dxgi_camera is None:
                     if not init_dxgi_camera():
-                        raise Exception("DXGI 初始化失败")
+                        raise Exception("DXGI init failed")
 
-                # 捕获帧 (返回 numpy 数组)
+                # Cleaned garbled comment.
                 frame = dxgi_camera.grab()
 
             if frame is not None:
-                # numpy 数组转 PIL Image
+                # Cleaned garbled comment.
                 img = Image.fromarray(frame)
                 return img
             else:
@@ -272,7 +485,7 @@ def capture_screen():
         except Exception as e:
             handle_dxgi_error(e)
 
-    # 回退到 mss 捕获
+    # Cleaned garbled comment.
     try:
         inst, monitor = get_mss()
         screenshot = inst.grab(monitor)
@@ -280,7 +493,7 @@ def capture_screen():
         return img
     except Exception as e:
         print(f"[Screen Capture Error] {e}")
-        # 返回错误图像
+        # Cleaned garbled comment.
         img = Image.new('RGB', (1920, 1080), color=(20, 20, 30))
         draw = ImageDraw.Draw(img)
         try:
@@ -299,7 +512,7 @@ def capture_screen_rgb_np():
             with dxgi_lock:
                 if dxgi_camera is None:
                     if not init_dxgi_camera():
-                        raise Exception("DXGI 初始化失败")
+                        raise Exception("DXGI init failed")
 
                 if hasattr(dxgi_camera, "get_latest_frame"):
                     frame = dxgi_camera.get_latest_frame()
@@ -330,29 +543,92 @@ def capture_screen_rgb_np():
 class WebRTCFramePump:
     def __init__(self):
         self._lock = threading.Lock()
+        self._state_lock = threading.Lock()
         self._latest = None
+        self._latest_ts = 0.0
         self._running = False
         self._thread = None
+        self._generation = 0
+        self._last_error_log_ts = 0.0
 
     def start(self):
-        if self._running:
-            return
-        self._running = True
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
+        with self._state_lock:
+            if self._running and self._thread is not None and self._thread.is_alive():
+                return
+            self._running = True
+            self._generation += 1
+            generation = self._generation
+            self._thread = threading.Thread(
+                target=self._run,
+                args=(generation,),
+                daemon=True,
+                name=f"WebRTCFramePump-{generation}",
+            )
+            self._thread.start()
 
     def stop(self):
-        self._running = False
+        with self._state_lock:
+            self._running = False
+            self._generation += 1
 
     def get_latest(self):
         with self._lock:
             return self._latest
 
-    def _run(self):
-        global webrtc_target_fps, webrtc_scale
-        while self._running:
+    def frame_age(self):
+        with self._lock:
+            if self._latest is None or self._latest_ts <= 0.0:
+                return float("inf")
+            return max(0.0, float(time.time() - self._latest_ts))
+
+    def restart(self, reason="unknown"):
+        print(f"[WebRTC] frame pump restart: {reason}")
+        self.stop()
+
+        # Reset cached frame to avoid serving stale image forever.
+        with self._lock:
+            self._latest = None
+            self._latest_ts = 0.0
+
+        # Best-effort reset of capture backends.
+        try:
+            release_dxgi_camera()
+        except Exception:
+            pass
+        try:
+            inst = getattr(mss_local, "instance", None)
+            if inst is not None:
+                try:
+                    inst.close()
+                except Exception:
+                    pass
+                try:
+                    delattr(mss_local, "instance")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        self.start()
+
+    def _run(self, generation):
+        global webrtc_target_fps, webrtc_scale, webrtc_max_width, webrtc_max_height
+        while True:
+            with self._state_lock:
+                if (not self._running) or (generation != self._generation):
+                    break
+
             t0 = time.time()
-            frame = capture_screen_rgb_np()
+            try:
+                frame = capture_screen_rgb_np()
+            except Exception as e:
+                now = time.time()
+                if now - self._last_error_log_ts >= 2.0:
+                    print(f"[WebRTC] frame capture error: {e}")
+                    self._last_error_log_ts = now
+                time.sleep(0.05)
+                continue
+
             if frame is None:
                 interval = 1.0 / max(1, int(webrtc_target_fps))
                 dt = time.time() - t0
@@ -360,13 +636,35 @@ class WebRTCFramePump:
                 if sleep_time > 0:
                     time.sleep(sleep_time)
                 continue
-            if webrtc_scale == 0.5 and frame is not None:
-                frame = frame[::2, ::2, :]
-                frame = np.ascontiguousarray(frame)
+
+            # Apply requested scale first (supports coarse downsample steps).
+            scale = float(webrtc_scale)
+            if scale < 0.99:
+                step = int(round(1.0 / max(0.25, scale)))
+                step = max(1, min(step, 4))
+                if step > 1:
+                    frame = frame[::step, ::step, :]
+
+            # Hard safety cap for mobile/browser stability.
+            h, w = frame.shape[:2]
+            step_w = int(np.ceil(float(w) / float(max(1, webrtc_max_width))))
+            step_h = int(np.ceil(float(h) / float(max(1, webrtc_max_height))))
+            cap_step = max(1, step_w, step_h)
+            if cap_step > 1:
+                frame = frame[::cap_step, ::cap_step, :]
+
+            frame = np.ascontiguousarray(frame)
             with self._lock:
                 self._latest = frame
+                self._latest_ts = float(time.time())
 
-            interval = 1.0 / max(1, int(webrtc_target_fps))
+            # Prevent backlog at very high resolutions while keeping detail.
+            target_fps = max(1, int(webrtc_target_fps))
+            if frame is not None:
+                h2, w2 = frame.shape[:2]
+                if (w2 * h2) >= 3000000 and target_fps > 20:
+                    target_fps = 20
+            interval = 1.0 / target_fps
             dt = time.time() - t0
             sleep_time = interval - dt
             if sleep_time > 0:
@@ -374,15 +672,216 @@ class WebRTCFramePump:
 
 
 if WEBRTC_AVAILABLE:
+    class SystemAudioTrack(AudioStreamTrack):
+        kind = "audio"
+
+        def __init__(self):
+            super().__init__()
+            self._sample_rate = int(audio_sample_rate)
+            self._channels = int(audio_channels)
+            self._frame_samples = int(audio_frame_samples)
+            self._queue = queue.Queue(maxsize=240)
+            self._pending = np.zeros((0, self._channels), dtype=np.int16)
+            self._stream = None
+            self._pts = 0
+            self._wall_start = None
+            self._closed = False
+
+        def _ensure_capture(self):
+            if self._stream is not None:
+                return
+            if not audio_enabled:
+                raise RuntimeError("audio_disabled")
+            if not SOUNDDEVICE_AVAILABLE or sd is None:
+                raise RuntimeError("sounddevice_unavailable")
+
+            devices = _audio_list_input_devices()
+            try:
+                candidates = _audio_rank_input_devices(devices)
+            except Exception as e:
+                _audio_set_error(f"select_input_device_failed: {e}")
+                raise
+
+            last_start_error = None
+            for selected in candidates:
+                selected_channels = min(self._channels, int(selected["max_input_channels"]))
+                if selected_channels < 1:
+                    continue
+                self._channels = selected_channels
+                self._pending = np.zeros((0, self._channels), dtype=np.int16)
+
+                def _callback(indata, frames, time_info, status):
+                    if self._closed:
+                        return
+                    if status:
+                        _audio_inc("discontinuities", 1)
+                        _audio_set_error(f"callback_status: {status}")
+
+                    try:
+                        pcm = np.asarray(indata, dtype=np.float32)
+                        if pcm.ndim == 1:
+                            pcm = pcm.reshape(-1, 1)
+                        if pcm.shape[1] < self._channels:
+                            pad = np.zeros((pcm.shape[0], self._channels - pcm.shape[1]), dtype=np.float32)
+                            pcm = np.hstack([pcm, pad])
+                        elif pcm.shape[1] > self._channels:
+                            pcm = pcm[:, :self._channels]
+
+                        pcm = np.clip(pcm, -1.0, 1.0)
+                        int16_pcm = (pcm * 32767.0).astype(np.int16, copy=False)
+                    except Exception as e:
+                        _audio_set_error(f"callback_convert_failed: {e}")
+                        return
+
+                    try:
+                        self._queue.put_nowait(int16_pcm.copy())
+                    except queue.Full:
+                        try:
+                            self._queue.get_nowait()
+                        except queue.Empty:
+                            pass
+                        try:
+                            self._queue.put_nowait(int16_pcm.copy())
+                        except Exception:
+                            pass
+                        _audio_inc("dropped_frames", 1)
+
+                try:
+                    self._stream = sd.InputStream(
+                        samplerate=self._sample_rate,
+                        blocksize=self._frame_samples,
+                        channels=self._channels,
+                        dtype="float32",
+                        device=int(selected["index"]),
+                        callback=_callback,
+                    )
+                    self._stream.start()
+                except Exception as e:
+                    last_start_error = e
+                    self._stream = None
+                    continue
+
+                _audio_set_status(
+                    capture_running=True,
+                    selected_device=selected["name"],
+                    device_index=int(selected["index"]),
+                    channels=int(self._channels),
+                    sample_rate=int(self._sample_rate),
+                    frame_samples=int(self._frame_samples),
+                    last_error="",
+                )
+                print(
+                    f"[Audio] capture ready: device={selected['name']}, "
+                    f"rate={self._sample_rate}, ch={self._channels}, frame={self._frame_samples}"
+                )
+                return
+
+            _audio_set_error(f"input_stream_start_failed: {last_start_error}")
+            raise RuntimeError(f"input_stream_start_failed: {last_start_error}")
+
+        def _append_chunk(self, chunk):
+            if chunk is None:
+                return
+            if chunk.ndim == 1:
+                chunk = chunk.reshape(-1, 1)
+            if chunk.shape[1] > self._channels:
+                chunk = chunk[:, :self._channels]
+            elif chunk.shape[1] < self._channels:
+                pad = np.zeros((chunk.shape[0], self._channels - chunk.shape[1]), dtype=np.int16)
+                chunk = np.hstack([chunk, pad])
+
+            if self._pending.size == 0:
+                self._pending = chunk
+            else:
+                self._pending = np.vstack([self._pending, chunk])
+
+            max_buffered = self._frame_samples * 20
+            if self._pending.shape[0] > max_buffered:
+                self._pending = self._pending[-max_buffered:, :]
+                _audio_inc("dropped_frames", 1)
+
+        def _pop_frame(self):
+            if self._pending.shape[0] < self._frame_samples:
+                return None
+            frame = self._pending[:self._frame_samples, :]
+            self._pending = self._pending[self._frame_samples:, :]
+            return frame
+
+        async def recv(self):
+            self._ensure_capture()
+
+            frame_data = self._pop_frame()
+            while frame_data is None:
+                try:
+                    chunk = await asyncio.to_thread(self._queue.get, True, 1.0)
+                    self._append_chunk(chunk)
+                    frame_data = self._pop_frame()
+                except queue.Empty:
+                    frame_data = np.zeros((self._frame_samples, self._channels), dtype=np.int16)
+                    _audio_inc("dropped_frames", 1)
+                    _audio_set_error("capture_timeout_fill_silence")
+                    break
+
+            rms = float(np.sqrt(np.mean((frame_data.astype(np.float32) / 32768.0) ** 2)))
+            _audio_inc("frames_generated", 1)
+            _audio_set_status(last_rms=rms, last_frame_ts=float(time.time()))
+
+            layout = "stereo" if self._channels == 2 else "mono"
+            # aiortc's Opus encoder expects packed s16 input.
+            packed = np.ascontiguousarray(frame_data.reshape(1, -1))
+            af = AudioFrame.from_ndarray(packed, format="s16", layout=layout)
+            af.sample_rate = self._sample_rate
+            af.pts = self._pts
+            af.time_base = Fraction(1, self._sample_rate)
+            self._pts += af.samples
+
+            if self._wall_start is None:
+                self._wall_start = time.time()
+            else:
+                target = self._wall_start + (self._pts / float(self._sample_rate))
+                delay = target - time.time()
+                if delay > 0:
+                    await asyncio.sleep(delay)
+            return af
+
+        def stop(self):
+            self._closed = True
+            stream = self._stream
+            self._stream = None
+            if stream is not None:
+                try:
+                    stream.stop()
+                except Exception:
+                    pass
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+            _audio_set_status(capture_running=False)
+            super().stop()
+
     class ScreenVideoTrack(VideoStreamTrack):
         def __init__(self, pump: WebRTCFramePump):
             super().__init__()
             self._pump = pump
             self._last = None
+            self._created_ts = float(time.time())
+            self._last_pump_restart_ts = 0.0
 
         async def recv(self):
             global webrtc_target_fps
             pts, time_base = await self.next_timestamp()
+
+            # If frame pump is stale for too long, restart capture backend.
+            frame_age = self._pump.frame_age()
+            if frame_age == float("inf") and (time.time() - self._created_ts) < 3.0:
+                frame_age = 0.0
+            if frame_age > 2.5:
+                now = time.time()
+                if now - self._last_pump_restart_ts >= 3.0:
+                    self._last_pump_restart_ts = now
+                    self._pump.restart(f"stalled age={frame_age:.2f}s")
+
             frame = self._pump.get_latest()
             if frame is None:
                 frame = self._last
@@ -402,14 +901,14 @@ if WEBRTC_AVAILABLE:
 
 
 def screen_to_bytes(img, quality=60):
-    """将图像转换为JPEG字节流"""
+    """Encode PIL image to JPEG bytes."""
     buffer = io.BytesIO()
     img.save(buffer, format='JPEG', quality=quality, optimize=True)
     return buffer.getvalue()
 
 
 def generate_video_stream():
-    """生成 MJPEG 视频流 - 优化版本"""
+    """Generate optimized MJPEG video stream."""
     global screen_capture_running, quality, fps
     screen_capture_running = True
     last_error_time = 0
@@ -420,7 +919,7 @@ def generate_video_stream():
         try:
             loop_start = time.time()
 
-            # 捕获屏幕
+            # Cleaned garbled comment.
             img = capture_screen()
             if img is None:
                 img = last_img
@@ -428,7 +927,7 @@ def generate_video_stream():
                 img = Image.new('RGB', (1280, 720), color=(0, 0, 0))
             last_img = img
 
-            # 压缩为JPEG - 使用更快的参数
+            # Cleaned garbled comment.
             buffer = io.BytesIO()
             img.save(buffer, format='JPEG', quality=quality, optimize=False, progressive=False)
             frame = buffer.getvalue()
@@ -438,43 +937,43 @@ def generate_video_stream():
                    b'Content-Length: ' + str(len(frame)).encode() + b'\r\n'
                    b'\r\n' + frame + b'\r\n')
 
-            # 重置错误计数
+            # Cleaned garbled comment.
             error_count = 0
 
-            # 精确帧率控制
+            # Cleaned garbled comment.
             elapsed = time.time() - loop_start
             target_interval = 1.0 / fps
             sleep_time = target_interval - elapsed
 
             if sleep_time > 0:
                 time.sleep(sleep_time)
-            elif sleep_time < -0.05:  # 如果落后超过50ms，跳过一帧调整
-                pass  # 继续下一帧，不额外等待
+            elif sleep_time < -0.05:  # Cleaned garbled comment.
+                pass  # Cleaned garbled comment.
 
         except GeneratorExit:
-            # 客户端断开连接
+            # Cleaned garbled comment.
             break
         except Exception as e:
             error_count += 1
             now = time.time()
-            if now - last_error_time > 5:  # 每5秒最多报告一次错误
-                print(f"[视频流] 错误 ({error_count}次): {e}")
+            if now - last_error_time > 5:  # Cleaned garbled comment.
+                print(f"[Video Stream] error ({error_count}): {e}")
                 last_error_time = now
                 error_count = 0
             time.sleep(0.05)
 
 
-# ============ HTTP 路由 ============
+# Cleaned garbled comment.
 
 @app.route('/')
 def index():
-    """主页面 - 控制界面"""
+    """Render control page."""
     return render_template('index.html')
 
 
 @app.route('/video')
 def video_feed():
-    """视频流接口"""
+    """MJPEG video endpoint."""
     return Response(
         generate_video_stream(),
         mimetype='multipart/x-mixed-replace; boundary=frame',
@@ -488,7 +987,7 @@ def video_feed():
 
 @app.route('/api/info')
 def server_info():
-    """服务器信息"""
+    """Basic server info endpoint."""
     return {
         'ip': get_local_ip(),
         'port': 5000,
@@ -499,14 +998,59 @@ def server_info():
     }
 
 
-# ============ WebSocket 事件 ============
+
+@app.route('/api/audio_info')
+@app.route('/audio_info')
+def audio_info():
+    devices = _audio_list_input_devices()
+    status = _audio_snapshot()
+    return {
+        'enabled': bool(audio_enabled),
+        'webrtc_available': bool(WEBRTC_AVAILABLE),
+        'sounddevice_available': bool(SOUNDDEVICE_AVAILABLE),
+        'device_name_hint': audio_device_name,
+        'sample_rate': int(audio_sample_rate),
+        'channels': int(audio_channels),
+        'frame_ms': int(audio_frame_ms),
+        'frame_samples': int(audio_frame_samples),
+        'status': status,
+        'devices': devices,
+    }
+
+
+@app.route('/api/audio_health')
+def audio_health():
+    status = _audio_snapshot()
+    client = status.get('client_stats') or {}
+    up = bool(
+        status.get('capture_running')
+        and float(status.get('last_rms', 0.0)) > 0.00001
+        and (time.time() - float(status.get('last_frame_ts', 0.0))) < 5.0
+    )
+    client_up = bool(
+        float(client.get('bytes_received', 0.0)) > 0
+        and (time.time() - float(client.get('ts', 0.0))) < 15.0
+    )
+    return {
+        'up': bool(up),
+        'client_up': bool(client_up),
+        'capture_running': bool(status.get('capture_running')),
+        'selected_device': status.get('selected_device'),
+        'frames_generated': int(status.get('frames_generated', 0)),
+        'dropped_frames': int(status.get('dropped_frames', 0)),
+        'discontinuities': int(status.get('discontinuities', 0)),
+        'last_rms': float(status.get('last_rms', 0.0)),
+        'last_error': status.get('last_error', ''),
+        'client_stats': client,
+    }
+# Cleaned garbled comment.
 
 @socketio.on('connect')
 def handle_connect():
-    """客户端连接"""
+    """Client connected."""
     global connected_clients
     connected_clients += 1
-    print(f"[+] 客户端连接，当前连接数: {connected_clients}")
+    print(f"[Socket] client connected, connected_clients={connected_clients}")
     emit('connected', {
         'status': 'ok',
         'screen_width': pyautogui.size().width,
@@ -517,10 +1061,10 @@ def handle_connect():
 
 @socketio.on('disconnect')
 def handle_disconnect():
-    """客户端断开"""
+    """Cleaned garbled docstring."""
     global connected_clients
     connected_clients = max(0, connected_clients - 1)
-    print(f"[-] 客户端断开，当前连接数: {connected_clients}")
+    print(f"[Socket] client disconnected, connected_clients={connected_clients}")
 
     sid = request.sid
     global xinput_pad, xinput_owner_sid, xinput_last_buttons
@@ -545,6 +1089,9 @@ def ensure_webrtc_runtime():
     if not (WEBRTC_AVAILABLE and webrtc_enabled):
         return False
 
+    if audio_enabled and (not SOUNDDEVICE_AVAILABLE or sd is None):
+        _audio_set_error("sounddevice_unavailable")
+
     if not dxgi_capture_enabled:
         dxgi_capture_enabled = True
         try:
@@ -566,6 +1113,9 @@ def ensure_webrtc_runtime():
     if webrtc_frame_pump is None:
         webrtc_frame_pump = WebRTCFramePump()
         webrtc_frame_pump.start()
+    else:
+        # Recover if pump thread died unexpectedly.
+        webrtc_frame_pump.start()
 
     return True
 
@@ -586,7 +1136,60 @@ async def _webrtc_wait_ice_complete(pc: RTCPeerConnection, timeout_s: float = 2.
         return
 
 
-async def _webrtc_close_peer(sid: str):
+def _webrtc_attach_track(pc: RTCPeerConnection, kind: str, track):
+    for transceiver in pc.getTransceivers():
+        if transceiver.kind != kind:
+            continue
+        try:
+            # For recvonly offers from client, force answer direction to sendonly.
+            transceiver.direction = "sendonly"
+        except Exception:
+            pass
+        try:
+            transceiver.sender.replaceTrack(track)
+            return True
+        except Exception:
+            pass
+    try:
+        pc.addTrack(track)
+        return True
+    except Exception:
+        return False
+
+
+def _webrtc_apply_codec_preferences(pc: RTCPeerConnection):
+    try:
+        video_caps = RTCRtpSender.getCapabilities("video").codecs
+        h264 = [c for c in video_caps if (c.name or "").upper() == "H264"]
+        if h264:
+            for transceiver in pc.getTransceivers():
+                if transceiver.kind == "video" and hasattr(transceiver, "setCodecPreferences"):
+                    transceiver.setCodecPreferences(h264)
+                    break
+    except Exception:
+        pass
+
+    try:
+        audio_caps = RTCRtpSender.getCapabilities("audio").codecs
+        opus = [c for c in audio_caps if (c.name or "").upper() == "OPUS"]
+        if opus:
+            for transceiver in pc.getTransceivers():
+                if transceiver.kind == "audio" and hasattr(transceiver, "setCodecPreferences"):
+                    transceiver.setCodecPreferences(opus)
+                    break
+    except Exception:
+        pass
+
+
+async def _webrtc_close_peer(sid: str, keep_frame_pump: bool = False):
+    global webrtc_frame_pump
+    audio_track = webrtc_audio_tracks.pop(sid, None)
+    if audio_track is not None:
+        try:
+            audio_track.stop()
+        except Exception:
+            pass
+
     pc = webrtc_peers.pop(sid, None)
     if pc:
         try:
@@ -594,15 +1197,17 @@ async def _webrtc_close_peer(sid: str):
         except Exception:
             pass
 
-    if not webrtc_peers and webrtc_frame_pump is not None:
+    if (not keep_frame_pump) and (not webrtc_peers) and webrtc_frame_pump is not None:
         try:
             webrtc_frame_pump.stop()
         except Exception:
             pass
+        webrtc_frame_pump = None
 
 
 async def _webrtc_handle_offer(sid: str, offer_sdp: str, offer_type: str):
-    await _webrtc_close_peer(sid)
+    # Replace existing peer for this sid, but keep frame pump alive during renegotiation.
+    await _webrtc_close_peer(sid, keep_frame_pump=True)
 
     pc = RTCPeerConnection()
     webrtc_peers[sid] = pc
@@ -615,28 +1220,27 @@ async def _webrtc_handle_offer(sid: str, offer_sdp: str, offer_type: str):
     await pc.setRemoteDescription(RTCSessionDescription(sdp=offer_sdp, type=offer_type))
 
     if webrtc_frame_pump is not None:
-        track = ScreenVideoTrack(webrtc_frame_pump)
-        attached = False
-        for transceiver in pc.getTransceivers():
-            if transceiver.kind == "video":
-                try:
-                    await transceiver.sender.replaceTrack(track)
-                    attached = True
-                    break
-                except Exception:
-                    pass
-        if not attached:
-            pc.addTrack(track)
+        video_track = ScreenVideoTrack(webrtc_frame_pump)
+        _webrtc_attach_track(pc, "video", video_track)
 
-    try:
-        caps = RTCRtpSender.getCapabilities("video").codecs
-        h264 = [c for c in caps if (c.name or "").upper() == "H264"]
-        for transceiver in pc.getTransceivers():
-            if transceiver.kind == "video" and hasattr(transceiver, "setCodecPreferences") and h264:
-                transceiver.setCodecPreferences(h264)
-                break
-    except Exception:
-        pass
+    if audio_enabled:
+        if SOUNDDEVICE_AVAILABLE and WEBRTC_AVAILABLE:
+            try:
+                audio_track = SystemAudioTrack()
+                if _webrtc_attach_track(pc, "audio", audio_track):
+                    webrtc_audio_tracks[sid] = audio_track
+                    print("[Audio] WebRTC track attached")
+                else:
+                    audio_track.stop()
+                    _audio_set_error("attach_audio_track_failed")
+            except Exception as e:
+                _audio_set_status(capture_running=False)
+                _audio_set_error(f"audio_track_init_failed: {e}")
+                print(f"[Audio] track init failed: {e}")
+        else:
+            _audio_set_error("sounddevice_unavailable")
+
+    _webrtc_apply_codec_preferences(pc)
 
     answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
@@ -665,9 +1269,27 @@ def handle_webrtc_offer(data):
         emit('webrtc_error', {'error': str(e)})
 
 
+@socketio.on('audio_client_stats')
+def handle_audio_client_stats(data):
+    if not isinstance(data, dict):
+        return
+    cleaned = {
+        'sid': request.sid,
+        'ts': float(time.time()),
+        'bytes_received': float(data.get('bytes_received', 0.0) or 0.0),
+        'packets_lost': int(data.get('packets_lost', 0) or 0),
+        'jitter_ms': float(data.get('jitter_ms', 0.0) or 0.0),
+        'audio_level': float(data.get('audio_level', 0.0) or 0.0),
+        'playing': bool(data.get('playing', False)),
+        'unlocked': bool(data.get('unlocked', False)),
+        'error': str(data.get('error', '') or ''),
+    }
+    _audio_set_status(client_stats=cleaned)
+
+
 @socketio.on('set_mode')
 def handle_set_mode(data):
-    """客户端切换模式"""
+    """Switch client control mode."""
     global game_mode
     mode = data.get('mode', 'touch')
 
@@ -683,11 +1305,11 @@ def handle_set_mode(data):
 
 @socketio.on('mouse_move')
 def handle_mouse_move(data):
-    """处理鼠标移动（绝对位置）"""
+    """Cleaned garbled docstring."""
     try:
         x = data.get('x', 0)
         y = data.get('y', 0)
-        # 确保坐标在屏幕范围内
+        # Cleaned garbled comment.
         screen_width, screen_height = pyautogui.size()
         x = max(0, min(x, screen_width))
         y = max(0, min(y, screen_height))
@@ -695,19 +1317,19 @@ def handle_mouse_move(data):
         if game_mode and input_sender:
             input_sender.move_absolute(x, y)
         elif input_sender:
-            # 使用底层 SetCursorPos 替代 pyautogui.moveTo
+            # Cleaned garbled comment.
             if not input_sender.set_mouse_pos(x, y):
-                # 如果底层设置失败（可能因权限不足），尝试回退到 pyautogui
+                # Cleaned garbled comment.
                 pyautogui.moveTo(x, y, duration=0)
         else:
             pyautogui.moveTo(x, y, duration=0)
     except Exception as e:
-        print(f"鼠标移动错误: {e}")
+        print(f"Mouse move error: {e}")
 
 
 @socketio.on('mouse_move_relative')
 def handle_mouse_move_relative(data):
-    """处理鼠标相对移动（触摸板模式）"""
+    """Handle relative mouse movement."""
     global game_mode
     try:
         dx = data.get('dx', 0)
@@ -719,12 +1341,12 @@ def handle_mouse_move_relative(data):
         else:
             pyautogui.moveRel(dx, dy, duration=0)
     except Exception as e:
-        print(f"鼠标相对移动错误: {e}")
+        print(f"Relative mouse move error: {e}")
 
 
 @socketio.on('get_mouse_pos')
 def handle_get_mouse_pos(sid=None):
-    """获取当前鼠标位置"""
+    """Cleaned garbled docstring."""
     try:
         if input_sender:
             x, y = input_sender.get_mouse_pos()
@@ -732,12 +1354,12 @@ def handle_get_mouse_pos(sid=None):
             x, y = pyautogui.position()
         emit('mouse_pos', {'x': x, 'y': y})
     except Exception as e:
-        print(f"获取鼠标位置错误: {e}")
+        print(f"Get mouse position error: {e}")
 
 
 @socketio.on('mouse_click')
 def handle_mouse_click(data):
-    """处理鼠标点击"""
+    """Cleaned garbled docstring."""
     try:
         button = data.get('button', 'left')
         action = data.get('action', 'down')
@@ -763,12 +1385,12 @@ def handle_mouse_click(data):
             else:
                 pyautogui.mouseUp(button=button)
     except Exception as e:
-        print(f"鼠标点击错误: {e}")
+        print(f"Mouse click error: {e}")
 
 
 @socketio.on('mouse_scroll')
 def handle_mouse_scroll(data):
-    """处理鼠标滚轮"""
+    """Cleaned garbled docstring."""
     try:
         dx = data.get('dx', 0)
         dy = data.get('dy', 0)
@@ -776,24 +1398,24 @@ def handle_mouse_scroll(data):
         if game_mode and input_sender:
             input_sender.scroll(dy, dx)
         else:
-            # 垂直滚动
+            # Cleaned garbled comment.
             if dy != 0:
                 pyautogui.scroll(int(dy))
-            # 水平滚动 (Windows支持)
+            # Cleaned garbled comment.
             if dx != 0:
                 pyautogui.hscroll(int(dx))
     except Exception as e:
-        print(f"鼠标滚轮错误: {e}")
+        print(f"Mouse scroll error: {e}")
 
 
 @socketio.on('key_event')
 def handle_key_event(data):
-    """处理键盘事件"""
+    """Cleaned garbled docstring."""
     try:
         key = data.get('key', '')
         action = data.get('action', 'down')
 
-        # 映射特殊键
+        # Cleaned garbled comment.
         key_map = {
             'Enter': 'return',
             'Return': 'return',
@@ -848,14 +1470,14 @@ def handle_key_event(data):
                 else:
                     pyautogui.keyUp(mapped_key)
     except Exception as e:
-        print(f"键盘事件错误: {e}")
+        print(f"Keyboard event error: {e}")
 
 
-# 存储 WASD 当前状态
+# Cleaned garbled comment.
 wasd_state = {'w': False, 'a': False, 's': False, 'd': False}
 
 def send_key(key, down):
-    """统一按键发送函数"""
+    """Send key press/release through the selected input backend."""
     if input_sender:
         if down:
             input_sender.key_down(key)
@@ -967,7 +1589,7 @@ def _xinput_ensure_for_sid(sid):
             try:
                 xinput_pad = vg.VX360Gamepad()
             except Exception as e:
-                print(f"[手柄] 创建虚拟手柄失败: {e}")
+                print(f"[Gamepad] virtual controller creation failed: {e}")
                 xinput_pad = None
                 xinput_owner_sid = None
                 xinput_last_buttons = 0
@@ -978,7 +1600,7 @@ def _xinput_ensure_for_sid(sid):
             except Exception:
                 pass
         if xinput_owner_sid != sid:
-            # 仅移交控制权，不重建虚拟手柄，避免游戏端丢失设备绑定
+            # Cleaned garbled comment.
             try:
                 xinput_pad.reset()
                 xinput_pad.update()
@@ -1010,7 +1632,7 @@ def _xinput_apply_state(pad, payload):
         pad.left_trigger(value=lt)
         pad.right_trigger(value=rt)
     except Exception as e:
-        print(f"[手柄] 设置摇杆/扳机失败: {e}")
+        print(f"[Gamepad] failed to set stick/trigger state: {e}")
         return False
 
     prev = xinput_last_buttons
@@ -1036,7 +1658,7 @@ def _xinput_apply_state(pad, payload):
     try:
         pad.update()
     except Exception as e:
-        print(f"[手柄] 提交手柄状态失败: {e}")
+        print(f"[Gamepad] failed to submit controller state: {e}")
         return False
     return True
 
@@ -1091,15 +1713,15 @@ def handle_xinput_state(data):
 
 @socketio.on('gamepad_input')
 def handle_gamepad(data):
-    """处理游戏手柄/虚拟手柄输入"""
+    """Cleaned garbled docstring."""
     global wasd_state
     try:
-        # WASD 移动
+        # Cleaned garbled comment.
         if data.get('type') == 'movement':
-            x = data.get('x', 0)  # -1 到 1
-            y = data.get('y', 0)  # -1 到 1
+            x = data.get('x', 0)  # Cleaned garbled comment.
+            y = data.get('y', 0)  # Cleaned garbled comment.
 
-            # 根据摇杆方向发送按键
+            # Cleaned garbled comment.
             deadzone = 0.3
 
             new_w = y < -deadzone
@@ -1107,7 +1729,7 @@ def handle_gamepad(data):
             new_a = x < -deadzone
             new_d = x > deadzone
 
-            # 只在状态变化时发送按键
+            # Cleaned garbled comment.
             if new_w != wasd_state['w']:
                 send_key('w', new_w)
                 wasd_state['w'] = new_w
@@ -1121,46 +1743,47 @@ def handle_gamepad(data):
                 send_key('d', new_d)
                 wasd_state['d'] = new_d
 
-        # 动作按钮
+        # Cleaned garbled comment.
         elif data.get('type') == 'action':
             button = data.get('button')
             pressed = data.get('pressed', False)
 
             key = None
             if button == 'A':
-                key = 'space'  # 跳跃/确认
+                key = 'space'  # Cleaned garbled comment.
             elif button == 'B':
-                key = 'esc'    # 取消/返回
+                key = 'esc'  # Cleaned garbled comment.
             elif button == 'X':
-                key = 'e'      # 交互
+                key = 'e'  # Cleaned garbled comment.
             elif button == 'Y':
-                key = 'r'      # 换弹/技能
+                key = 'r'  # Cleaned garbled comment.
 
             if key:
                 send_key(key, pressed)
 
     except Exception as e:
-        print(f"手柄输入错误: {e}")
+        print(f"Gamepad input error: {e}")
 
 
 @socketio.on('set_quality')
 def handle_set_quality(data, sid=None):
-    """设置图像质量"""
+    """Cleaned garbled docstring."""
     global quality
     new_quality = max(10, min(95, data.get('quality', 60)))
     quality = new_quality
-    print(f"[设置] 画质调整为: {quality}")
+    print(f"[Settings] quality updated: {quality}")
     emit('quality_updated', {'quality': quality})
 
 
 @socketio.on('set_fps')
 def handle_set_fps(data, sid=None):
-    """设置帧率"""
-    global fps
+    """Cleaned garbled docstring."""
+    global fps, webrtc_target_fps
     new_fps = max(10, min(60, data.get('fps', 30)))
     fps = new_fps
-    print(f"[设置] 帧率调整为: {fps}")
-    emit('fps_updated', {'fps': fps})
+    webrtc_target_fps = new_fps
+    print(f"[Settings] FPS updated: {fps}")
+    emit('fps_updated', {'fps': fps, 'webrtc_fps': webrtc_target_fps})
 
 
 @socketio.on('set_webrtc_scale')
@@ -1177,7 +1800,7 @@ def handle_set_webrtc_scale(data):
 
 @socketio.on('set_capture_mode')
 def handle_set_capture_mode(data):
-    """切换屏幕捕获模式 (dxgi/mss)"""
+    """Cleaned garbled docstring."""
     global dxgi_capture_enabled, dxgi_failure_count, dxgi_retry_after
     mode = data.get('mode', 'auto')
 
@@ -1188,7 +1811,7 @@ def handle_set_capture_mode(data):
         if dxgi_capture_enabled:
             emit('capture_mode_updated', {'mode': 'dxgi', 'status': 'ok'})
         else:
-            emit('capture_mode_updated', {'mode': 'mss', 'status': 'error', 'message': 'DXGI 初始化失败'})
+            emit('capture_mode_updated', {'mode': 'mss', 'status': 'error', 'message': 'DXGI init failed'})
     elif mode == 'mss':
         dxgi_capture_enabled = False
         release_dxgi_camera()
@@ -1200,7 +1823,7 @@ def handle_set_capture_mode(data):
 
 @socketio.on('get_capture_info')
 def handle_get_capture_info():
-    """获取当前捕获模式信息"""
+    """Return current capture mode info."""
     emit('capture_info', {
         'mode': 'dxgi' if dxgi_camera else 'mss',
         'dxgi_available': dxcam is not None,
@@ -1208,45 +1831,64 @@ def handle_get_capture_info():
     })
 
 
-# ============ 启动 ============
+# Cleaned garbled comment.
 
 def main():
     ip = get_local_ip()
     port = 5000
 
-    # 检查命令行参数
+    # Cleaned garbled comment.
     use_dxgi = '--dxgi' in sys.argv
 
-    # 如果指定了 --dxgi，尝试初始化
+    # Cleaned garbled comment.
     if use_dxgi:
-        print("[启动] 尝试启用 DXGI 捕获...")
+        print("[Startup] trying DXGI capture mode...")
         init_dxgi_camera()
 
     print("=" * 50)
-    print("    远程控制服务端已启动")
+    print("    Remote control server started")
     print("=" * 50)
-    print(f"  本机IP: {ip}")
-    print(f"  端口: {port}")
-    print(f"  屏幕分辨率: {pyautogui.size()}")
-    print(f"  捕获模式: {'DXGI (硬件加速)' if dxgi_camera else 'MSS (软件捕获)'}")
+    print(f"  Host IP: {ip}")
+    print(f"  Port: {port}")
+    print(f"  Screen size: {pyautogui.size()}")
+    print(f"  Capture mode: {'DXGI (hardware)' if dxgi_camera else 'MSS (software)'}")
+    print(f"  Audio: {'ON' if audio_enabled else 'OFF'}")
+    print(f"  Audio device hint: {audio_device_name or '(auto)'}")
     print("-" * 50)
-    print(f"  控制界面: http://{ip}:{port}")
+    print(f"  Control UI: http://{ip}:{port}")
+    print(f"  Audio info: http://{ip}:{port}/api/audio_info")
+    print(f"  Audio health: http://{ip}:{port}/api/audio_health")
     print("=" * 50)
-    print("\n请确保平板和电脑连接同一个热点/WiFi")
-    print("在平板上用浏览器访问上述地址即可控制")
+    print("\nMake sure tablet and PC are on the same Wi-Fi/LAN.")
+    print("Open the Control UI URL above from the tablet browser.")
     if dxgi_camera:
-        print("\n[提示] DXGI 模式已启用，管理员运行可捕获 UAC 弹窗")
+        print("\n[Hint] DXGI capture enabled; run as admin to capture UAC prompts.")
     else:
-        print("\n[提示] 使用: python server.py --dxgi 启用硬件加速捕获")
+        print("\n[Hint] Use: python server.py --dxgi to enable hardware capture")
     print()
 
     try:
-        # 启动服务
-        socketio.run(app, host='0.0.0.0', port=port, debug=False, use_reloader=False)
+        # Cleaned garbled comment.
+        socketio.run(
+            app,
+            host='0.0.0.0',
+            port=port,
+            debug=False,
+            use_reloader=False,
+            allow_unsafe_werkzeug=True,
+        )
     finally:
-        # 清理资源
+        # Cleaned garbled comment.
+        for sid, track in list(webrtc_audio_tracks.items()):
+            try:
+                track.stop()
+            except Exception:
+                pass
+        webrtc_audio_tracks.clear()
         release_dxgi_camera()
 
 
 if __name__ == '__main__':
     main()
+
+

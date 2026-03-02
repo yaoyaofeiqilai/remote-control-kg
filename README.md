@@ -49,6 +49,41 @@ What it does:
 - `tools/diagnostics/test_uac_capture.py`
 - `tools/diagnostics/test_uac_now.py`
 - `tools/diagnostics/uac_test_dpi.py`
+- `tools/diagnostics/audio_smoke.py`
+- `tools/diagnostics/webrtc_audio_e2e.py`
+- `tools/diagnostics/soak_30m.py`
+
+## Audio (VB-CABLE Preferred, Auto Fallback)
+
+Default audio source hint is `CABLE Output`.
+If the hinted device is not found, backend now falls back to the best available input device and reports `device_not_found_fallback` in `status.last_error`.
+
+Env vars:
+- `RC_AUDIO_ENABLED=1`
+- `RC_AUDIO_DEVICE_NAME=CABLE Output`
+- `RC_AUDIO_SAMPLE_RATE=48000`
+- `RC_AUDIO_CHANNELS=2`
+- `RC_AUDIO_FRAME_MS=20`
+
+Example:
+
+```bat
+set RC_AUDIO_DEVICE_NAME=CABLE Output
+start.bat
+```
+
+Quick checks:
+
+```bat
+python tools/diagnostics/audio_smoke.py --duration 15
+python tools/diagnostics/webrtc_audio_e2e.py --url http://127.0.0.1:5000 --duration 12
+python tools/diagnostics/webrtc_audio_e2e.py --url http://127.0.0.1:5000 --duration 12 --allow-silence
+python tools/diagnostics/soak_30m.py --url http://127.0.0.1:5000/api/audio_health --duration 1800
+```
+
+`webrtc_audio_e2e.py` behavior:
+- Default: requires transport success and `audio_rms_max >= --min-rms`.
+- `--allow-silence`: only requires transport/frame thresholds (useful when source is expected to be silent).
 
 ## Debug Logging
 
