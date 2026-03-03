@@ -22,7 +22,7 @@ const CONFIG = {
 
 
 const DEBUG_LOG_ENABLED = false;
-const CLIENT_BUILD = '20260303_audio_fix2';
+const CLIENT_BUILD = '20260304_audio_fix3';
 
 function debugLog(...args) {
     if (DEBUG_LOG_ENABLED) {
@@ -81,7 +81,7 @@ const state = {
         unlocked: false,
         hasTrack: false,
         lastError: '',
-        transportEnabled: false,
+        transportEnabled: true,
         transportPending: false,
         featureEnabled: true,
         systemMuteAvailable: false,
@@ -1068,7 +1068,7 @@ function initSocket() {
     statusEl.textContent = '连接中...';
     statusEl.className = 'connecting';
 
-    setAudioTransportLocalState(false, false);
+    setAudioTransportLocalState(true, false);
     setSystemMuteLocalState(false, false, false);
     updateAudioControlUI();
 

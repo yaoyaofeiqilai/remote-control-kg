@@ -68,6 +68,9 @@ if not defined RC_DXGI_OUTPUT_COLOR (
 if not defined RC_AUDIO_ENABLED (
     set "RC_AUDIO_ENABLED=1"
 )
+if not defined RC_AUDIO_TRANSPORT_DEFAULT_ENABLED (
+    set "RC_AUDIO_TRANSPORT_DEFAULT_ENABLED=1"
+)
 call %PY_CMD% server.py --dxgi %*
 set "EXIT_CODE=%ERRORLEVEL%"
 
