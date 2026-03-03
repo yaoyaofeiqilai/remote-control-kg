@@ -22,7 +22,7 @@ const CONFIG = {
 
 
 const DEBUG_LOG_ENABLED = false;
-const CLIENT_BUILD = '20260303_latency_tune2';
+const CLIENT_BUILD = '20260303_latency_tune2c';
 
 function debugLog(...args) {
     if (DEBUG_LOG_ENABLED) {
@@ -291,12 +291,21 @@ function applyVideoReceiverLowLatencyHints(pc, videoTrack = null) {
     }
 }
 
+function getEffectivePlayoutDelayMs() {
+    const rawMs = Number(state.webrtcStats.playoutDelayMs || 0);
+    const ewmaMs = Number(state.webrtcStats.playoutDelayEwmaMs || 0);
+    if (rawMs > 0 && ewmaMs > 0) {
+        return Math.max(rawMs, Math.min(ewmaMs, rawMs + 20));
+    }
+    return ewmaMs > 0 ? ewmaMs : rawMs;
+}
+
 function applyVideoCatchupRate() {
     const videoEl = document.getElementById('screen-video');
     if (!videoEl || !state.webrtc.using) return;
     let nextRate = 1.0;
     if (CONFIG.lowLatencyMode) {
-        const delayMs = Number(state.webrtcStats.playoutDelayEwmaMs || state.webrtcStats.playoutDelayMs || 0);
+        const delayMs = getEffectivePlayoutDelayMs();
         if (delayMs >= 300) nextRate = 1.75;
         else if (delayMs >= 260) nextRate = 1.60;
         else if (delayMs >= 200) nextRate = 1.45;
@@ -340,7 +349,7 @@ function softFlushVideoPlayback(reason = '') {
         emit('webrtc_client_event', {
             type: 'soft_flush',
             reason: String(reason || ''),
-            delay_ms: Number(state.webrtcStats.playoutDelayEwmaMs || state.webrtcStats.playoutDelayMs || 0),
+            delay_ms: getEffectivePlayoutDelayMs(),
             playback_rate: Number(state.webrtc.playbackRate || 1.0),
             client_build: CLIENT_BUILD,
         });
@@ -356,7 +365,7 @@ function checkWebRTCLatencyDrift() {
         return;
     }
     const now = Date.now();
-    const delayMs = Number(state.webrtcStats.playoutDelayEwmaMs || state.webrtcStats.playoutDelayMs || 0);
+    const delayMs = getEffectivePlayoutDelayMs();
     if (!Number.isFinite(delayMs) || delayMs <= 0) {
         state.webrtc.latencyBadTicks = 0;
         return;
@@ -2701,7 +2710,7 @@ function updateFPS() {
             if (state.webrtc.using) {
                 const mbps = state.webrtcStats.bitrateMbps || 0;
                 const akbps = state.webrtcStats.audioKbps || 0;
-                const lms = state.webrtcStats.playoutDelayEwmaMs || state.webrtcStats.playoutDelayMs || 0;
+                const lms = getEffectivePlayoutDelayMs();
                 const rawBacklog = Number(state.webrtcStats.framesBacklog || 0);
                 const estBacklog = Math.max(0, (Number(lms || 0) / 1000) * Math.max(1, Number(displayFps || 0)));
                 const hasBacklog = rawBacklog > 0.2 || estBacklog > 0.2;

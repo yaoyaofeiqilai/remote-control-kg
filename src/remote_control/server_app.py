@@ -507,9 +507,15 @@ def _webrtc_sender_ts_update_from_client_stats(stats):
     sid = str((stats or {}).get("sid", "") or "")
     if not sid:
         return
-    delay = float((stats or {}).get("playout_delay_ewma_ms", 0.0) or 0.0)
-    if delay <= 0.0:
-        delay = float((stats or {}).get("playout_delay_ms", 0.0) or 0.0)
+    delay_ewma = float((stats or {}).get("playout_delay_ewma_ms", 0.0) or 0.0)
+    delay_raw = float((stats or {}).get("playout_delay_ms", 0.0) or 0.0)
+    if delay_ewma > 0.0 and delay_raw > 0.0:
+        # Avoid stale EWMA pinning catch-up too hard after raw delay has recovered.
+        delay = max(delay_raw, min(delay_ewma, delay_raw + 20.0))
+    elif delay_ewma > 0.0:
+        delay = delay_ewma
+    else:
+        delay = delay_raw
     if delay <= 0.0:
         return
     backlog = float((stats or {}).get("frames_backlog", 0.0) or 0.0)
@@ -544,6 +550,13 @@ def _webrtc_sender_ts_update_from_client_stats(stats):
             target = min(target, 0.78)
         elif backlog >= 1.0:
             target = min(target, 0.84)
+        # Keep a stronger floor in the 35-55ms zone so delay does not stall there.
+        if delay >= 55.0:
+            target = min(target, 0.78)
+        elif delay >= 45.0:
+            target = min(target, 0.84)
+        elif delay >= 35.0:
+            target = min(target, 0.90)
 
         # Enter/extend an anti-rebound hold window when delay is clearly high.
         if delay >= 220.0:
