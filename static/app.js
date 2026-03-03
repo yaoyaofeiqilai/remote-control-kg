@@ -21,6 +21,7 @@ const CONFIG = {
 
 
 const DEBUG_LOG_ENABLED = false;
+const CLIENT_BUILD = '20260303_latency_restore';
 
 function debugLog(...args) {
     if (DEBUG_LOG_ENABLED) {
@@ -53,10 +54,20 @@ const state = {
         pc: null,
         using: false,
         starting: false,
+        stopping: false,
         restartTimer: null,
         restartAttempts: 0,
         maxRestartAttempts: 6,
+        lastRestartScheduledAt: 0,
+        restartCooldownMs: 15000,
         lastFrameAt: 0,
+        lastMediaProgressAt: 0,
+        lastVideoCurrentTime: 0,
+        trackWaitTimer: null,
+        noVideoTrackTimeoutMs: 4500,
+        disconnectRestartTimer: null,
+        playStartTimer: null,
+        playbackRate: 1.0,
         freezeWatchdogTimer: null,
         hasFrameCallback: false,
     },
@@ -76,12 +87,19 @@ const state = {
         audioLastTs: 0,
         packetsLost: 0,
         framesDropped: 0,
+        framesReceived: 0,
+        framesBacklog: 0,
         framesDecoded: 0,
         framesPerSecond: 0,
         decodeMs: 0,
         decodeTotalSec: 0,
         decodeTotalFrames: 0,
         jitterMs: 0,
+        jitterBufferDelayTotalSec: 0,
+        jitterBufferEmittedCount: 0,
+        playoutDelayMs: 0,
+        playoutDelayEwmaMs: 0,
+        processingDelayMs: 0,
         lastBytes: 0,
         lastTs: 0,
         timer: null,
@@ -220,6 +238,78 @@ function socketOnce(eventName, timeoutMs = 8000) {
     });
 }
 
+function markWebRTCMediaProgress(strong = false) {
+    const now = Date.now();
+    state.webrtc.lastFrameAt = now;
+    if (strong || state.webrtc.lastMediaProgressAt <= 0) {
+        state.webrtc.lastMediaProgressAt = now;
+    }
+    const videoEl = document.getElementById('screen-video');
+    if (!videoEl) return;
+    const ct = Number(videoEl.currentTime || 0);
+    if (Number.isFinite(ct) && ct >= 0) {
+        state.webrtc.lastVideoCurrentTime = ct;
+    }
+}
+
+function scheduleDisconnectedRestartCheck(pc, reason, holdMs = 15000) {
+    if (state.webrtc.disconnectRestartTimer) return;
+    state.webrtc.disconnectRestartTimer = setTimeout(() => {
+        state.webrtc.disconnectRestartTimer = null;
+        if (pc !== state.webrtc.pc) return;
+        const cs = pc.connectionState || '';
+        const isDisconnected = cs === 'disconnected' || pc.iceConnectionState === 'disconnected';
+        if (!isDisconnected) return;
+        scheduleWebRTCRestart(reason, 1200);
+    }, holdMs);
+}
+
+function applyVideoReceiverLowLatencyHints(pc, videoTrack = null) {
+    if (!pc || typeof pc.getTransceivers !== 'function') return;
+    for (const transceiver of pc.getTransceivers()) {
+        if (!transceiver || transceiver.kind !== 'video' || !transceiver.receiver) continue;
+        const track = transceiver.receiver.track || null;
+        if (videoTrack && track && track.id !== videoTrack.id) continue;
+        try {
+            if ('playoutDelayHint' in transceiver.receiver) {
+                transceiver.receiver.playoutDelayHint = CONFIG.lowLatencyMode ? 0.01 : 0.1;
+            }
+        } catch (e) {
+        }
+        try {
+            if ('jitterBufferTarget' in transceiver.receiver) {
+                transceiver.receiver.jitterBufferTarget = CONFIG.lowLatencyMode ? 0.01 : 0.08;
+            }
+        } catch (e) {
+        }
+    }
+}
+
+function applyVideoCatchupRate() {
+    const videoEl = document.getElementById('screen-video');
+    if (!videoEl || !state.webrtc.using) return;
+    let nextRate = 1.0;
+    if (CONFIG.lowLatencyMode) {
+        const delayMs = Number(state.webrtcStats.playoutDelayEwmaMs || state.webrtcStats.playoutDelayMs || 0);
+        if (delayMs >= 220) nextRate = 1.25;
+        else if (delayMs >= 160) nextRate = 1.18;
+        else if (delayMs >= 110) nextRate = 1.12;
+        else if (delayMs >= 70) nextRate = 1.08;
+        else if (delayMs >= 45) nextRate = 1.05;
+    }
+    if (!Number.isFinite(nextRate) || nextRate <= 0) nextRate = 1.0;
+    const prevRate = Number(state.webrtc.playbackRate || 1.0);
+    if (Math.abs(prevRate - nextRate) < 0.005) return;
+    state.webrtc.playbackRate = nextRate;
+    try {
+        videoEl.playbackRate = nextRate;
+        if ('defaultPlaybackRate' in videoEl) {
+            videoEl.defaultPlaybackRate = nextRate;
+        }
+    } catch (e) {
+    }
+}
+
 function clearWebRTCRestartTimer() {
     if (state.webrtc.restartTimer) {
         clearTimeout(state.webrtc.restartTimer);
@@ -239,30 +329,65 @@ function stopMJPEG() {
 
 function startWebRTCFreezeWatchdog() {
     if (state.webrtc.freezeWatchdogTimer) return;
-    state.webrtc.lastFrameAt = Date.now();
+    markWebRTCMediaProgress(true);
     state.webrtc.freezeWatchdogTimer = setInterval(() => {
         if (!state.webrtc.using || !state.webrtc.pc) return;
-        const last = state.webrtc.lastFrameAt || 0;
+        if (document.hidden || String(document.visibilityState || '') === 'hidden') return;
+        const videoEl = document.getElementById('screen-video');
+        if (videoEl) {
+            const ct = Number(videoEl.currentTime || 0);
+            const lastCt = Number(state.webrtc.lastVideoCurrentTime || 0);
+            if (Number.isFinite(ct) && ct > (lastCt + 0.004)) {
+                state.webrtc.lastVideoCurrentTime = ct;
+                state.webrtc.lastMediaProgressAt = Date.now();
+            }
+        }
+        const last = Math.max(
+            Number(state.webrtc.lastFrameAt || 0),
+            Number(state.webrtc.lastMediaProgressAt || 0)
+        );
         const stalledMs = Date.now() - last;
-        if (stalledMs < 5000) return;
+        if (stalledMs < 12000) return;
+        const pc = state.webrtc.pc;
+        if (!pc) return;
+        const cs = String(pc.connectionState || '');
+        const ics = String(pc.iceConnectionState || '');
+        if (cs === 'failed' || ics === 'failed') {
+            scheduleWebRTCRestart('video_failed', 1200);
+            return;
+        }
+        if (cs === 'disconnected' || ics === 'disconnected') {
+            scheduleDisconnectedRestartCheck(pc, 'video_stalled_disconnected', 15000);
+            return;
+        }
         scheduleWebRTCRestart('video_stalled', 1200);
     }, 2000);
 }
 
 function scheduleWebRTCRestart(reason, delayMs = 1200) {
     debugLog('[WebRTC] restart scheduled:', reason);
-    stopWebRTC();
-    stopMJPEG();
-
     if (!state.connected) return;
     if (state.webrtc.restartTimer) return;
+    const passiveReason = /^(video_stalled|video_track_ended|connection_disconnected|ice_disconnected|video_stalled_disconnected|no_video_track_timeout|video_not_playing_startup)$/.test(String(reason || ''));
+    if (passiveReason) {
+        const now = Date.now();
+        const since = now - Number(state.webrtc.lastRestartScheduledAt || 0);
+        const cooldownMs = Number(state.webrtc.restartCooldownMs || 15000);
+        if (state.webrtc.lastRestartScheduledAt > 0 && since < cooldownMs) {
+            debugLog('[WebRTC] restart skipped (cooldown):', reason, 'since=', since);
+            return;
+        }
+    }
     if (state.webrtc.restartAttempts >= state.webrtc.maxRestartAttempts) {
         debugLog('[WebRTC] restart capped');
         return;
     }
 
     state.webrtc.restartAttempts += 1;
+    state.webrtc.lastRestartScheduledAt = Date.now();
     const nextDelay = Math.min(8000, Math.max(800, delayMs));
+    stopWebRTC();
+    stopMJPEG();
     state.webrtc.restartTimer = setTimeout(async () => {
         state.webrtc.restartTimer = null;
         if (!state.connected) return;
@@ -280,6 +405,18 @@ function scheduleWebRTCRestart(reason, delayMs = 1200) {
 }
 
 function stopWebRTC() {
+    if (state.webrtc.playStartTimer) {
+        clearTimeout(state.webrtc.playStartTimer);
+        state.webrtc.playStartTimer = null;
+    }
+    if (state.webrtc.trackWaitTimer) {
+        clearTimeout(state.webrtc.trackWaitTimer);
+        state.webrtc.trackWaitTimer = null;
+    }
+    if (state.webrtc.disconnectRestartTimer) {
+        clearTimeout(state.webrtc.disconnectRestartTimer);
+        state.webrtc.disconnectRestartTimer = null;
+    }
     if (state.webrtc.freezeWatchdogTimer) {
         clearInterval(state.webrtc.freezeWatchdogTimer);
         state.webrtc.freezeWatchdogTimer = null;
@@ -289,11 +426,28 @@ function stopWebRTC() {
         state.webrtcStats.timer = null;
     }
     if (state.webrtc.pc) {
+        const pc = state.webrtc.pc;
+        state.webrtc.stopping = true;
+        state.webrtc.pc = null;
         try {
-            state.webrtc.pc.close();
+            pc.ontrack = null;
+            pc.onconnectionstatechange = null;
+            pc.oniceconnectionstatechange = null;
         } catch (e) {
         }
-        state.webrtc.pc = null;
+        try {
+            const receivers = (typeof pc.getReceivers === 'function') ? pc.getReceivers() : [];
+            for (const receiver of receivers) {
+                if (receiver && receiver.track) {
+                    receiver.track.onended = null;
+                }
+            }
+        } catch (e) {
+        }
+        try {
+            pc.close();
+        } catch (e) {
+        }
     }
     const audioEl = getAudioElement();
     if (audioEl) {
@@ -306,6 +460,18 @@ function stopWebRTC() {
     state.audio.hasTrack = false;
     state.webrtc.using = false;
     state.webrtc.hasFrameCallback = false;
+    state.webrtc.playbackRate = 1.0;
+    state.webrtc.lastMediaProgressAt = 0;
+    state.webrtc.lastVideoCurrentTime = 0;
+    state.webrtc.stopping = false;
+    const videoEl = document.getElementById('screen-video');
+    if (videoEl) {
+        try {
+            videoEl.playbackRate = 1.0;
+            if ('defaultPlaybackRate' in videoEl) videoEl.defaultPlaybackRate = 1.0;
+        } catch (e) {
+        }
+    }
     updateAudioUnlockButton();
 }
 
@@ -320,6 +486,18 @@ function startWebRTCStats() {
     state.webrtcStats.audioLastTs = 0;
     state.webrtcStats.decodeTotalSec = 0;
     state.webrtcStats.decodeTotalFrames = 0;
+    state.webrtcStats.packetsLost = 0;
+    state.webrtcStats.framesDropped = 0;
+    state.webrtcStats.framesReceived = 0;
+    state.webrtcStats.framesDecoded = 0;
+    state.webrtcStats.framesBacklog = 0;
+    state.webrtcStats.framesPerSecond = 0;
+    state.webrtcStats.jitterMs = 0;
+    state.webrtcStats.jitterBufferDelayTotalSec = 0;
+    state.webrtcStats.jitterBufferEmittedCount = 0;
+    state.webrtcStats.playoutDelayMs = 0;
+    state.webrtcStats.playoutDelayEwmaMs = 0;
+    state.webrtcStats.processingDelayMs = 0;
 
     state.webrtcStats.timer = setInterval(async () => {
         if (!state.webrtc.using || !state.webrtc.pc) return;
@@ -350,11 +528,11 @@ function startWebRTCStats() {
                 }
                 decoderImpl = videoInbound.decoderImplementation || '';
                 powerEfficient = !!videoInbound.powerEfficientDecoder;
-                if (decodedNow > prevDecoded || fpsNow > 0) {
-                    state.webrtc.lastFrameAt = Date.now();
+                if (decodedNow > prevDecoded || fpsNow > 0 || bytesAdvanced) {
+                    markWebRTCMediaProgress(true);
                 } else if (!state.webrtc.hasFrameCallback && !hasDecodedCounter && bytesAdvanced) {
                     // Fallback for very old browsers that do not expose decode counters.
-                    state.webrtc.lastFrameAt = Date.now();
+                    markWebRTCMediaProgress(true);
                 }
                 if (state.webrtcStats.lastTs) {
                     const dt = (nowTs - state.webrtcStats.lastTs) / 1000;
@@ -365,11 +543,50 @@ function startWebRTCStats() {
                 state.webrtcStats.lastBytes = bytes;
                 state.webrtcStats.packetsLost = videoInbound.packetsLost || 0;
                 state.webrtcStats.framesDropped = videoInbound.framesDropped || 0;
+                state.webrtcStats.framesReceived = Number(videoInbound.framesReceived || 0);
                 state.webrtcStats.framesDecoded = decodedNow;
+                const backlogNow = state.webrtcStats.framesReceived - state.webrtcStats.framesDecoded - state.webrtcStats.framesDropped;
+                state.webrtcStats.framesBacklog = Number.isFinite(backlogNow) ? Math.max(0, backlogNow) : 0;
                 state.webrtcStats.framesPerSecond = fpsNow;
                 state.webrtcStats.jitterMs = videoInbound.jitter ? videoInbound.jitter * 1000 : 0;
-                const totalDecodeTime = Number(videoInbound.totalDecodeTime || 0);
+                const jitterBufferDelayTotalSec = Number(videoInbound.jitterBufferDelay || 0);
+                const jitterBufferEmittedCount = Number(videoInbound.jitterBufferEmittedCount || 0);
+                if (
+                    jitterBufferDelayTotalSec >= state.webrtcStats.jitterBufferDelayTotalSec &&
+                    jitterBufferEmittedCount > state.webrtcStats.jitterBufferEmittedCount
+                ) {
+                    const deltaDelaySec = jitterBufferDelayTotalSec - state.webrtcStats.jitterBufferDelayTotalSec;
+                    const deltaEmit = jitterBufferEmittedCount - state.webrtcStats.jitterBufferEmittedCount;
+                    if (deltaDelaySec >= 0 && deltaEmit >= 3) {
+                        let playoutSampleMs = (deltaDelaySec * 1000) / deltaEmit;
+                        if (Number.isFinite(playoutSampleMs)) {
+                            playoutSampleMs = Math.max(0, Math.min(400, playoutSampleMs));
+                            const prevPlayoutMs = Number(state.webrtcStats.playoutDelayMs || 0);
+                            if (prevPlayoutMs > 0) {
+                                const lower = Math.max(0, prevPlayoutMs * 0.6);
+                                const upper = Math.max(prevPlayoutMs + 35, prevPlayoutMs * 1.45);
+                                playoutSampleMs = Math.max(lower, Math.min(upper, playoutSampleMs));
+                            }
+                        } else {
+                            playoutSampleMs = Number(state.webrtcStats.playoutDelayMs || 0);
+                        }
+                        state.webrtcStats.playoutDelayMs = playoutSampleMs;
+                        if (state.webrtcStats.playoutDelayEwmaMs <= 0) {
+                            state.webrtcStats.playoutDelayEwmaMs = state.webrtcStats.playoutDelayMs;
+                        } else {
+                            state.webrtcStats.playoutDelayEwmaMs =
+                                state.webrtcStats.playoutDelayEwmaMs * 0.85 + state.webrtcStats.playoutDelayMs * 0.15;
+                        }
+                    }
+                }
+                state.webrtcStats.jitterBufferDelayTotalSec = jitterBufferDelayTotalSec;
+                state.webrtcStats.jitterBufferEmittedCount = jitterBufferEmittedCount;
                 const totalDecoded = Number(videoInbound.framesDecoded || 0);
+                const totalProcessingDelay = Number(videoInbound.totalProcessingDelay || 0);
+                if (totalProcessingDelay > 0 && totalDecoded > 0) {
+                    state.webrtcStats.processingDelayMs = (totalProcessingDelay * 1000) / totalDecoded;
+                }
+                const totalDecodeTime = Number(videoInbound.totalDecodeTime || 0);
                 if (
                     totalDecodeTime > 0 &&
                     totalDecoded > 0 &&
@@ -392,10 +609,18 @@ function startWebRTCStats() {
                     frames_per_second: state.webrtcStats.framesPerSecond,
                     decode_ms: state.webrtcStats.decodeMs || 0,
                     jitter_ms: state.webrtcStats.jitterMs,
+                    playout_delay_ms: state.webrtcStats.playoutDelayMs || 0,
+                    playout_delay_ewma_ms: state.webrtcStats.playoutDelayEwmaMs || 0,
+                    processing_delay_ms: state.webrtcStats.processingDelayMs || 0,
+                    frames_received: state.webrtcStats.framesReceived || 0,
+                    frames_backlog: state.webrtcStats.framesBacklog || 0,
+                    playback_rate: state.webrtc.playbackRate || 1.0,
                     codec: codecMime,
                     decoder_impl: decoderImpl,
                     power_efficient: powerEfficient,
+                    client_build: CLIENT_BUILD,
                 });
+                applyVideoCatchupRate();
             }
 
             if (audioInbound) {
@@ -437,7 +662,7 @@ function startVideoFrameMonitor() {
 
     const onFrame = () => {
         state.videoFrameCount++;
-        state.webrtc.lastFrameAt = Date.now();
+        markWebRTCMediaProgress(false);
         const now = Date.now();
         const elapsed = now - state.lastVideoFpsUpdate;
         if (elapsed >= 1000) {
@@ -477,22 +702,68 @@ async function startWebRTC() {
 
         pc.addTransceiver('video', { direction: 'recvonly' });
         pc.addTransceiver('audio', { direction: 'recvonly' });
+        applyVideoReceiverLowLatencyHints(pc);
 
         pc.ontrack = (e) => {
             if (pc !== state.webrtc.pc) return;
+            if (state.webrtc.stopping) return;
             const stream = (e.streams && e.streams[0]) ? e.streams[0] : null;
             if (e.track && e.track.kind === 'audio') {
                 const audioStream = stream || new MediaStream([e.track]);
                 attachRemoteAudioStream(audioStream);
                 return;
             }
-            if (e.track && e.track.kind === 'video' && stream) {
+            if (e.track && e.track.kind === 'video') {
                 stopMJPEG();
-                videoEl.srcObject = stream;
+                const incomingVideoStream =
+                    (stream && typeof stream.getVideoTracks === 'function' && stream.getVideoTracks().length > 0)
+                        ? stream
+                        : new MediaStream([e.track]);
+                let shouldRebind = true;
+                const currentObj = videoEl.srcObject;
+                if (currentObj && typeof currentObj.getVideoTracks === 'function') {
+                    const currentTrack = currentObj.getVideoTracks()[0] || null;
+                    if (currentTrack && currentTrack.id === e.track.id) {
+                        shouldRebind = false;
+                    }
+                }
+                if (shouldRebind) {
+                    videoEl.srcObject = incomingVideoStream;
+                }
+                try {
+                    videoEl.playbackRate = 1.0;
+                    if ('defaultPlaybackRate' in videoEl) videoEl.defaultPlaybackRate = 1.0;
+                } catch (e2) {
+                }
+                try {
+                    const p = videoEl.play();
+                    if (p && typeof p.catch === 'function') p.catch(() => {});
+                } catch (e2) {
+                }
+                state.webrtc.playbackRate = 1.0;
+                applyVideoReceiverLowLatencyHints(pc, e.track);
                 videoEl.classList.remove('hidden');
                 screenImg.classList.add('hidden');
                 state.webrtc.using = true;
-                state.webrtc.lastFrameAt = Date.now();
+                if (state.webrtc.trackWaitTimer) {
+                    clearTimeout(state.webrtc.trackWaitTimer);
+                    state.webrtc.trackWaitTimer = null;
+                }
+                markWebRTCMediaProgress(true);
+                if (state.webrtc.playStartTimer) {
+                    clearTimeout(state.webrtc.playStartTimer);
+                    state.webrtc.playStartTimer = null;
+                }
+                state.webrtc.playStartTimer = setTimeout(() => {
+                    if (pc !== state.webrtc.pc) return;
+                    if (!state.webrtc.using) return;
+                    const v = document.getElementById('screen-video');
+                    const ready = v ? Number(v.readyState || 0) : 0;
+                    const ct = v ? Number(v.currentTime || 0) : 0;
+                    const paused = v ? !!v.paused : true;
+                    if (ready >= 2 && !paused && ct > 0.02) return;
+                    scheduleWebRTCRestart('video_not_playing_startup', 800);
+                }, 3500);
                 state.webrtc.restartAttempts = 0;
                 startVideoFrameMonitor();
                 startWebRTCStats();
@@ -500,7 +771,14 @@ async function startWebRTC() {
                 if (e.track) {
                     e.track.onended = () => {
                         if (pc !== state.webrtc.pc) return;
-                        scheduleWebRTCRestart('video_track_ended', 1200);
+                        if (state.webrtc.stopping) return;
+                        const cs = String(pc.connectionState || '');
+                        const ics = String(pc.iceConnectionState || '');
+                        if (cs === 'disconnected' || ics === 'disconnected') {
+                            scheduleDisconnectedRestartCheck(pc, 'video_track_ended', 15000);
+                        } else {
+                            scheduleWebRTCRestart('video_track_ended', 1200);
+                        }
                     };
                 }
             }
@@ -508,17 +786,23 @@ async function startWebRTC() {
 
         pc.onconnectionstatechange = () => {
             if (pc !== state.webrtc.pc) return;
+            if (state.webrtc.stopping) return;
             const s = pc.connectionState;
-            if (s === 'failed' || s === 'closed' || s === 'disconnected') {
+            if (s === 'failed' || s === 'closed') {
                 scheduleWebRTCRestart('connection_' + s, 1200);
+            } else if (s === 'disconnected') {
+                scheduleDisconnectedRestartCheck(pc, 'connection_disconnected', 15000);
             }
         };
 
         pc.oniceconnectionstatechange = () => {
             if (pc !== state.webrtc.pc) return;
+            if (state.webrtc.stopping) return;
             const s = pc.iceConnectionState;
-            if (s === 'failed' || s === 'closed' || s === 'disconnected') {
+            if (s === 'failed' || s === 'closed') {
                 scheduleWebRTCRestart('ice_' + s, 1200);
+            } else if (s === 'disconnected') {
+                scheduleDisconnectedRestartCheck(pc, 'ice_disconnected', 15000);
             }
         };
 
@@ -529,6 +813,16 @@ async function startWebRTC() {
         const answer = await socketOnce('webrtc_answer', 12000);
         if (!answer || !answer.sdp) throw new Error('bad_answer');
         await pc.setRemoteDescription(answer);
+        if (state.webrtc.trackWaitTimer) {
+            clearTimeout(state.webrtc.trackWaitTimer);
+            state.webrtc.trackWaitTimer = null;
+        }
+        const waitMs = Math.max(2500, Number(state.webrtc.noVideoTrackTimeoutMs || 4500));
+        state.webrtc.trackWaitTimer = setTimeout(() => {
+            if (pc !== state.webrtc.pc) return;
+            if (state.webrtc.using) return;
+            scheduleWebRTCRestart('no_video_track_timeout', 800);
+        }, waitMs);
         return true;
     } finally {
         state.webrtc.starting = false;
@@ -637,7 +931,7 @@ function initSocket() {
     state.socket.on('fps_updated', (data) => {
         if (!data) return;
         const maxFps = parseInt(data.webrtc_fps_max ?? 120, 10);
-        const v = parseInt(data.webrtc_fps ?? data.fps ?? 60, 10);
+        const v = parseInt(data.webrtc_fps ?? data.fps ?? 45, 10);
         if (!Number.isFinite(v)) return;
         const fpsSlider = document.getElementById('fps-slider');
         const fpsValue = document.getElementById('fps-value');
@@ -717,6 +1011,22 @@ function stopMouseSync() {
 function applyLowLatencyMode(enabled) {
     CONFIG.lowLatencyMode = !!enabled;
     CONFIG.touchThrottleMs = CONFIG.lowLatencyMode ? 8 : 16;
+    if (state.webrtc.pc) {
+        applyVideoReceiverLowLatencyHints(state.webrtc.pc);
+    }
+    if (!CONFIG.lowLatencyMode && state.webrtc.using) {
+        state.webrtc.playbackRate = 1.0;
+        const videoEl = document.getElementById('screen-video');
+        if (videoEl) {
+            try {
+                videoEl.playbackRate = 1.0;
+                if ('defaultPlaybackRate' in videoEl) videoEl.defaultPlaybackRate = 1.0;
+            } catch (e) {
+            }
+        }
+    } else {
+        applyVideoCatchupRate();
+    }
     if (state.connected) {
         stopMouseSync();
         startMouseSync();
@@ -2286,7 +2596,14 @@ function updateFPS() {
             if (state.webrtc.using) {
                 const mbps = state.webrtcStats.bitrateMbps || 0;
                 const akbps = state.webrtcStats.audioKbps || 0;
-                fpsEl.textContent = displayFps + ' FPS ' + mbps.toFixed(1) + ' Mbps A:' + akbps.toFixed(0) + 'kbps';
+                const lms = state.webrtcStats.playoutDelayEwmaMs || state.webrtcStats.playoutDelayMs || 0;
+                const rawBacklog = Number(state.webrtcStats.framesBacklog || 0);
+                const estBacklog = Math.max(0, (Number(lms || 0) / 1000) * Math.max(1, Number(displayFps || 0)));
+                const hasBacklog = rawBacklog > 0.2 || estBacklog > 0.2;
+                const backlogText = hasBacklog ? (rawBacklog > 0.2 ? rawBacklog : estBacklog).toFixed(1) : '-';
+                let pr = Number(state.webrtc.playbackRate || 1.0);
+                if (!Number.isFinite(pr) || pr <= 0) pr = 1.0;
+                fpsEl.textContent = displayFps + ' FPS ' + mbps.toFixed(1) + ' Mbps A:' + akbps.toFixed(0) + 'kbps L:' + lms.toFixed(0) + 'ms B:' + backlogText + ' x' + pr.toFixed(2);
             } else {
                 fpsEl.textContent = displayFps + ' FPS';
             }

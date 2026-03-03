@@ -176,8 +176,27 @@ except Exception:
 STATIC_DIR = os.path.join(PROJECT_ROOT, 'static')
 TEMPLATE_DIR = os.path.join(PROJECT_ROOT, 'templates')
 app = Flask(__name__, static_folder=STATIC_DIR, template_folder=TEMPLATE_DIR)
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 CORS(app)
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading', logger=False, engineio_logger=False)
+socketio = SocketIO(
+    app,
+    cors_allowed_origins="*",
+    async_mode='threading',
+    logger=False,
+    engineio_logger=False,
+    ping_timeout=90,
+    ping_interval=20,
+)
+
+
+@app.after_request
+def _disable_cache_for_ui(resp):
+    path = str(request.path or "")
+    if path == "/" or path.startswith("/static/"):
+        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        resp.headers["Pragma"] = "no-cache"
+        resp.headers["Expires"] = "0"
+    return resp
 
 SOUNDDEVICE_AVAILABLE = False
 sd = None
@@ -204,14 +223,14 @@ pyautogui.PAUSE = 0.01
 # Cleaned garbled comment.
 connected_clients = 0
 quality = _env_int("RC_QUALITY", 95, 10, 95)  # Cleaned garbled comment.
-fps = 60  # Cleaned garbled comment.
+fps = 45  # Cleaned garbled comment.
 
 webrtc_enabled = True
 webrtc_capture_backend = (os.getenv("RC_CAPTURE_BACKEND", "auto") or "auto").strip().lower()
 if webrtc_capture_backend not in ("auto", "dxgi", "mss"):
     webrtc_capture_backend = "auto"
 webrtc_fps_max = _env_int("RC_WEBRTC_FPS_MAX", 120, 30, 240)
-webrtc_target_fps = _env_int("RC_WEBRTC_FPS", 60, 5, webrtc_fps_max)
+webrtc_target_fps = _env_int("RC_WEBRTC_FPS", 45, 5, webrtc_fps_max)
 fps = int(webrtc_target_fps)
 _screen_size = pyautogui.size()
 webrtc_scale = _env_float("RC_WEBRTC_SCALE", 1.0, 0.25, 1.0)
@@ -2300,12 +2319,19 @@ def handle_video_client_stats(data):
         'packets_lost': int(data.get('packets_lost', 0) or 0),
         'frames_decoded': int(data.get('frames_decoded', 0) or 0),
         'frames_dropped': int(data.get('frames_dropped', 0) or 0),
+        'frames_received': int(data.get('frames_received', 0) or 0),
+        'frames_backlog': float(data.get('frames_backlog', 0.0) or 0.0),
         'frames_per_second': float(data.get('frames_per_second', 0.0) or 0.0),
         'decode_ms': float(data.get('decode_ms', 0.0) or 0.0),
         'jitter_ms': float(data.get('jitter_ms', 0.0) or 0.0),
+        'playout_delay_ms': float(data.get('playout_delay_ms', 0.0) or 0.0),
+        'playout_delay_ewma_ms': float(data.get('playout_delay_ewma_ms', 0.0) or 0.0),
+        'processing_delay_ms': float(data.get('processing_delay_ms', 0.0) or 0.0),
+        'playback_rate': float(data.get('playback_rate', 1.0) or 1.0),
         'codec': str(data.get('codec', '') or ''),
         'decoder_impl': str(data.get('decoder_impl', '') or ''),
         'power_efficient': bool(data.get('power_efficient', False)),
+        'client_build': str(data.get('client_build', '') or '')[:64],
         'sid': request.sid,
         'ts': time.time(),
     }
