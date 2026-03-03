@@ -1,5 +1,5 @@
 @echo off
-setlocal EnableExtensions
+setlocal EnableExtensions EnableDelayedExpansion
 chcp 65001 >nul 2>&1
 
 cd /d "%~dp0"
@@ -56,7 +56,15 @@ if "%CHECK_ONLY%"=="1" (
     exit /b 0
 )
 
+call :cleanup_stale_server
+
 echo [INFO] Starting server with DXGI mode...
+if not defined RC_WEBRTC_H264_ENCODER_ORDER (
+    set "RC_WEBRTC_H264_ENCODER_ORDER=h264_nvenc,h264_qsv,h264_mf,h264_amf,libx264"
+)
+if not defined RC_DXGI_OUTPUT_COLOR (
+    set "RC_DXGI_OUTPUT_COLOR=RGB"
+)
 call %PY_CMD% server.py --dxgi %*
 set "EXIT_CODE=%ERRORLEVEL%"
 
@@ -67,6 +75,21 @@ if not "%EXIT_CODE%"=="0" (
 echo.
 pause
 exit /b %EXIT_CODE%
+
+:cleanup_stale_server
+set "KILLED_PIDS="
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:"0.0.0.0:5000 .*LISTENING"') do (
+    set "PROC_NAME="
+    for /f "usebackq tokens=1 delims=," %%N in (`tasklist /FI "PID eq %%P" /FO CSV /NH`) do (
+        set "PROC_NAME=%%~N"
+    )
+    if /I "!PROC_NAME!"=="python.exe" (
+        taskkill /PID %%P /F >nul 2>&1
+        if not errorlevel 1 set "KILLED_PIDS=!KILLED_PIDS! %%P"
+    )
+)
+if defined KILLED_PIDS echo [INFO] Stopped stale server process(es):!KILLED_PIDS!
+exit /b 0
 
 :resolve_python
 set "PY_CMD="

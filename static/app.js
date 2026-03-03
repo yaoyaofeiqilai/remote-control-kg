@@ -58,6 +58,7 @@ const state = {
         maxRestartAttempts: 6,
         lastFrameAt: 0,
         freezeWatchdogTimer: null,
+        hasFrameCallback: false,
     },
     audio: {
         unlocked: false,
@@ -304,6 +305,7 @@ function stopWebRTC() {
     }
     state.audio.hasTrack = false;
     state.webrtc.using = false;
+    state.webrtc.hasFrameCallback = false;
     updateAudioUnlockButton();
 }
 
@@ -332,6 +334,11 @@ function startWebRTCStats() {
             if (videoInbound) {
                 const nowTs = videoInbound.timestamp || performance.now();
                 const bytes = videoInbound.bytesReceived || 0;
+                const prevDecoded = Number(state.webrtcStats.framesDecoded || 0);
+                const decodedNow = Number(videoInbound.framesDecoded || 0);
+                const fpsNow = Number(videoInbound.framesPerSecond || 0);
+                const bytesAdvanced = bytes > state.webrtcStats.lastBytes;
+                const hasDecodedCounter = typeof videoInbound.framesDecoded === 'number';
                 let codecMime = '';
                 let decoderImpl = '';
                 let powerEfficient = false;
@@ -343,7 +350,10 @@ function startWebRTCStats() {
                 }
                 decoderImpl = videoInbound.decoderImplementation || '';
                 powerEfficient = !!videoInbound.powerEfficientDecoder;
-                if (bytes > state.webrtcStats.lastBytes) {
+                if (decodedNow > prevDecoded || fpsNow > 0) {
+                    state.webrtc.lastFrameAt = Date.now();
+                } else if (!state.webrtc.hasFrameCallback && !hasDecodedCounter && bytesAdvanced) {
+                    // Fallback for very old browsers that do not expose decode counters.
                     state.webrtc.lastFrameAt = Date.now();
                 }
                 if (state.webrtcStats.lastTs) {
@@ -355,8 +365,8 @@ function startWebRTCStats() {
                 state.webrtcStats.lastBytes = bytes;
                 state.webrtcStats.packetsLost = videoInbound.packetsLost || 0;
                 state.webrtcStats.framesDropped = videoInbound.framesDropped || 0;
-                state.webrtcStats.framesDecoded = videoInbound.framesDecoded || 0;
-                state.webrtcStats.framesPerSecond = videoInbound.framesPerSecond || 0;
+                state.webrtcStats.framesDecoded = decodedNow;
+                state.webrtcStats.framesPerSecond = fpsNow;
                 state.webrtcStats.jitterMs = videoInbound.jitter ? videoInbound.jitter * 1000 : 0;
                 const totalDecodeTime = Number(videoInbound.totalDecodeTime || 0);
                 const totalDecoded = Number(videoInbound.framesDecoded || 0);
@@ -421,7 +431,9 @@ function startWebRTCStats() {
 
 function startVideoFrameMonitor() {
     const videoEl = document.getElementById('screen-video');
-    if (!videoEl || typeof videoEl.requestVideoFrameCallback !== 'function') return;
+    const supportsFrameCallback = !!(videoEl && typeof videoEl.requestVideoFrameCallback === 'function');
+    state.webrtc.hasFrameCallback = supportsFrameCallback;
+    if (!supportsFrameCallback) return;
 
     const onFrame = () => {
         state.videoFrameCount++;

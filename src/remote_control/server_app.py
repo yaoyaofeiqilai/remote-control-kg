@@ -219,7 +219,10 @@ webrtc_max_width = _env_int("RC_WEBRTC_MAX_WIDTH", int(_screen_size.width), 320,
 webrtc_max_height = _env_int("RC_WEBRTC_MAX_HEIGHT", int(_screen_size.height), 240, 4320)
 capture_all_monitors = _env_flag("RC_CAPTURE_ALL_MONITORS", False)
 webrtc_bitrate_auto = _env_flag("RC_WEBRTC_AUTO_BITRATE", True)
-webrtc_target_bitrate_kbps = _env_int("RC_WEBRTC_BITRATE_KBPS", 24000, 500, 80000)
+webrtc_max_bitrate_kbps = _env_int("RC_WEBRTC_MAX_BITRATE_KBPS", 80000, 1000, 200000)
+webrtc_target_bitrate_kbps = _env_int("RC_WEBRTC_BITRATE_KBPS", 24000, 500, webrtc_max_bitrate_kbps)
+webrtc_start_bitrate_kbps = _env_int("RC_WEBRTC_START_BITRATE_KBPS", 24000, 500, webrtc_max_bitrate_kbps)
+webrtc_min_bitrate_kbps = _env_int("RC_WEBRTC_MIN_BITRATE_KBPS", 300, 300, webrtc_max_bitrate_kbps)
 webrtc_bitrate_scale = _env_float("RC_WEBRTC_BITRATE_SCALE", 2.0, 0.5, 3.0)
 webrtc_force_h264_only = _env_flag("RC_WEBRTC_FORCE_H264_ONLY", True)
 webrtc_h264_conservative_level = _env_flag("RC_WEBRTC_H264_CONSERVATIVE_LEVEL", False)
@@ -275,7 +278,7 @@ def _estimate_webrtc_bitrate_kbps():
         if quality_now >= 90:
             kbps = max(kbps, 60000)
 
-    return max(1200, min(80000, kbps))
+    return max(1200, min(int(webrtc_max_bitrate_kbps), kbps))
 
 
 def _sync_webrtc_bitrate_target():
@@ -284,6 +287,13 @@ def _sync_webrtc_bitrate_target():
     if webrtc_bitrate_auto:
         webrtc_target_bitrate_kbps = _estimate_webrtc_bitrate_kbps()
     return int(webrtc_target_bitrate_kbps)
+
+
+def _effective_webrtc_min_bitrate_kbps(target_kbps: int) -> int:
+    """Resolve effective min bitrate hint from configured policy."""
+    target_kbps = max(500, int(target_kbps))
+    configured = max(300, int(webrtc_min_bitrate_kbps))
+    return max(300, min(target_kbps, configured))
 
 
 _sync_webrtc_bitrate_target()
@@ -367,12 +377,13 @@ if audio_enabled and not SOUNDDEVICE_AVAILABLE:
 video_status_lock = threading.Lock()
 video_status = {
     "client_stats": {},
+    "track_stats": {},
 }
 
 # Cleaned garbled comment.
 dxgi_camera = None
 dxgi_capture_enabled = webrtc_capture_backend in ("auto", "dxgi")  # Cleaned garbled comment.
-dxgi_capture_target_fps = _env_int("RC_DXGI_CAPTURE_FPS", 60, 30, 240)
+dxgi_capture_target_fps = _env_int("RC_DXGI_CAPTURE_FPS", 120, 30, 240)
 dxgi_output_color = (os.getenv("RC_DXGI_OUTPUT_COLOR", "RGB") or "RGB").strip().upper()
 if dxgi_output_color not in ("RGB", "BGRA"):
     dxgi_output_color = "RGB"
@@ -425,6 +436,11 @@ def _audio_snapshot():
 def _video_set_client_stats(stats):
     with video_status_lock:
         video_status["client_stats"] = dict(stats or {})
+
+
+def _video_set_track_stats(stats):
+    with video_status_lock:
+        video_status["track_stats"] = dict(stats or {})
 
 
 def _video_snapshot():
@@ -734,7 +750,6 @@ def _is_dxgi_unsupported_error(err):
         "unsupported" in lowered
         or "not supported" in lowered
         or "feature level" in lowered
-        or "不受支持" in text
     ):
         return True
     try:
@@ -769,8 +784,7 @@ def init_dxgi_camera():
                 dxgi_camera = dxcam.create()
             try:
                 if hasattr(dxgi_camera, "start"):
-                    requested = max(15, min(int(webrtc_fps_max), int(webrtc_target_fps)))
-                    target = max(30, min(int(dxgi_capture_target_fps), int(requested)))
+                    target = max(30, min(int(dxgi_capture_target_fps), int(webrtc_fps_max)))
                     try:
                         dxgi_camera.start(target_fps=target, video_mode=True)
                     except TypeError:
@@ -818,8 +832,7 @@ def reconfigure_dxgi_capture_fps():
     with dxgi_lock:
         if dxgi_camera is None:
             return False
-        requested = max(15, min(int(webrtc_fps_max), int(webrtc_target_fps)))
-        target = max(30, min(int(dxgi_capture_target_fps), int(requested)))
+        target = max(30, min(int(dxgi_capture_target_fps), int(webrtc_fps_max)))
         try:
             if hasattr(dxgi_camera, "stop"):
                 dxgi_camera.stop()
@@ -1080,12 +1093,25 @@ class WebRTCFramePump:
 
     def _run(self, generation):
         global webrtc_target_fps, webrtc_scale, webrtc_max_width, webrtc_max_height
+        next_tick = time.perf_counter()
+
+        def _sleep_to_next_frame():
+            nonlocal next_tick
+            target_fps = max(15, min(int(webrtc_fps_max), int(webrtc_target_fps)))
+            interval = 1.0 / float(target_fps)
+            now_tick = time.perf_counter()
+            if next_tick < (now_tick - interval):
+                next_tick = now_tick
+            next_tick += interval
+            sleep_time = next_tick - time.perf_counter()
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+
         while True:
             with self._state_lock:
                 if (not self._running) or (generation != self._generation):
                     break
 
-            t0 = time.time()
             try:
                 frame, pixel_format = capture_screen_frame_np()
             except Exception as e:
@@ -1093,15 +1119,11 @@ class WebRTCFramePump:
                 if now - self._last_error_log_ts >= 2.0:
                     print(f"[WebRTC] frame capture error: {e}")
                     self._last_error_log_ts = now
-                time.sleep(0.05)
+                _sleep_to_next_frame()
                 continue
 
             if frame is None:
-                interval = 1.0 / max(15, min(int(webrtc_fps_max), int(webrtc_target_fps)))
-                dt = time.time() - t0
-                sleep_time = interval - dt
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
+                _sleep_to_next_frame()
                 continue
 
             # Apply requested scale first.
@@ -1139,11 +1161,7 @@ class WebRTCFramePump:
                         frame = resize_rgb_frame(frame, target_w, target_h)
 
             if frame is None:
-                interval = 1.0 / max(15, min(int(webrtc_fps_max), int(webrtc_target_fps)))
-                dt = time.time() - t0
-                sleep_time = interval - dt
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
+                _sleep_to_next_frame()
                 continue
 
             if not frame.flags["C_CONTIGUOUS"]:
@@ -1159,12 +1177,7 @@ class WebRTCFramePump:
                     self._fps_counter = 0
                     self._fps_window_start = now
 
-            target_fps = max(15, min(int(webrtc_fps_max), int(webrtc_target_fps)))
-            interval = 1.0 / target_fps
-            dt = time.time() - t0
-            sleep_time = interval - dt
-            if sleep_time > 0:
-                time.sleep(sleep_time)
+            _sleep_to_next_frame()
 
 
 if WEBRTC_AVAILABLE:
@@ -1480,13 +1493,20 @@ if WEBRTC_AVAILABLE:
             super().__init__()
             self._pump = pump
             self._last = None
+            self._last_vf = None
+            self._blank_frame = np.zeros((720, 1280, 3), dtype=np.uint8)
             self._created_ts = float(time.time())
             self._last_pump_restart_ts = 0.0
             self._stale_count = 0
             self._clock_rate = 90000
             self._time_base = Fraction(1, self._clock_rate)
             self._timestamp = 0
-            self._started_at = None
+            self._started_at_perf = None
+            self._recv_window_start_perf = None
+            self._recv_counter = 0
+            self._recv_fps = 0.0
+            self._last_recv_perf = None
+            self._last_stats_push_perf = None
 
         async def recv(self):
             global webrtc_target_fps
@@ -1495,17 +1515,18 @@ if WEBRTC_AVAILABLE:
             target_fps = requested_fps
             ticks_per_frame = max(1, int(self._clock_rate / target_fps))
             wait_s = 0.0
-            if self._started_at is None:
-                self._started_at = time.time()
+            now_perf = time.perf_counter()
+            if self._started_at_perf is None:
+                self._started_at_perf = now_perf
                 self._timestamp = 0
             else:
                 self._timestamp += ticks_per_frame
-                target_time = self._started_at + (self._timestamp / float(self._clock_rate))
+                target_time = self._started_at_perf + (self._timestamp / float(self._clock_rate))
                 # Drop scheduling debt if loop falls too far behind.
-                if target_time < (time.time() - 0.25):
-                    self._started_at = time.time() - (self._timestamp / float(self._clock_rate))
-                    target_time = self._started_at + (self._timestamp / float(self._clock_rate))
-                wait_s = target_time - time.time()
+                if target_time < (now_perf - 0.25):
+                    self._started_at_perf = now_perf - (self._timestamp / float(self._clock_rate))
+                    target_time = self._started_at_perf + (self._timestamp / float(self._clock_rate))
+                wait_s = target_time - now_perf
             if wait_s > 0:
                 await asyncio.sleep(wait_s)
 
@@ -1530,19 +1551,45 @@ if WEBRTC_AVAILABLE:
                 latest = self._last
             if latest is None:
                 await asyncio.sleep(0.005)
-                latest = self._pump.get_latest()
+                latest = self._pump.get_latest() or self._last
 
             if latest is None:
-                h, w = 720, 1280
-                frame = np.zeros((h, w, 3), dtype=np.uint8)
-                pixel_format = "rgb24"
-                latest = (frame, pixel_format)
-            self._last = latest
-            frame, pixel_format = latest
+                latest = (self._blank_frame, "rgb24")
 
-            vf = VideoFrame.from_ndarray(frame, format=(pixel_format or "rgb24"))
+            if latest is self._last and self._last_vf is not None:
+                vf = self._last_vf
+            else:
+                self._last = latest
+                frame, pixel_format = latest
+                vf = VideoFrame.from_ndarray(frame, format=(pixel_format or "rgb24"))
+                self._last_vf = vf
             vf.pts = self._timestamp
             vf.time_base = self._time_base
+
+            now_perf = time.perf_counter()
+            interval_ms = 0.0
+            if self._last_recv_perf is not None:
+                interval_ms = max(0.0, (now_perf - self._last_recv_perf) * 1000.0)
+            self._last_recv_perf = now_perf
+            if self._recv_window_start_perf is None:
+                self._recv_window_start_perf = now_perf
+                self._recv_counter = 1
+            else:
+                self._recv_counter += 1
+                window = now_perf - self._recv_window_start_perf
+                if window >= 1.0:
+                    self._recv_fps = float(self._recv_counter) / float(max(window, 1e-6))
+                    self._recv_counter = 0
+                    self._recv_window_start_perf = now_perf
+            if (self._last_stats_push_perf is None) or ((now_perf - self._last_stats_push_perf) >= 0.5):
+                self._last_stats_push_perf = now_perf
+                _video_set_track_stats({
+                    "recv_fps": round(float(self._recv_fps), 1),
+                    "target_fps": int(target_fps),
+                    "frame_age_ms": round(float(frame_age) * 1000.0, 1) if frame_age != float("inf") else -1.0,
+                    "wait_ms": round(float(max(wait_s, 0.0)) * 1000.0, 3),
+                    "interval_ms": round(float(interval_ms), 3),
+                })
             return vf
 
 
@@ -1577,6 +1624,10 @@ def server_info():
         'webrtc_fps_max': int(webrtc_fps_max),
         'webrtc_scale': webrtc_scale,
         'webrtc_bitrate_kbps': webrtc_target_bitrate_kbps,
+        'webrtc_max_bitrate_kbps': int(webrtc_max_bitrate_kbps),
+        'webrtc_start_bitrate_kbps': int(webrtc_start_bitrate_kbps),
+        'webrtc_min_bitrate_kbps': int(webrtc_min_bitrate_kbps),
+        'webrtc_min_bitrate_effective_kbps': int(_effective_webrtc_min_bitrate_kbps(webrtc_target_bitrate_kbps)),
         'webrtc_bitrate_scale': float(webrtc_bitrate_scale),
         'webrtc_force_h264_only': bool(webrtc_force_h264_only),
         'webrtc_video_pt_count': int(last_video_codec_policy.get('video_pt_count', 0) or 0),
@@ -1659,6 +1710,7 @@ def video_health():
             capture_fps = 0.0
     status = _video_snapshot()
     client = status.get('client_stats') or {}
+    track = status.get('track_stats') or {}
     client_up = bool(
         float(client.get('bytes_received', 0.0)) > 0
         and (time.time() - float(client.get('ts', 0.0))) < 15.0
@@ -1667,8 +1719,11 @@ def video_health():
         'capture_fps': float(round(capture_fps, 1)),
         'target_fps': int(webrtc_target_fps),
         'bitrate_kbps': int(webrtc_target_bitrate_kbps),
+        'start_bitrate_kbps': int(webrtc_start_bitrate_kbps),
+        'min_bitrate_kbps': int(_effective_webrtc_min_bitrate_kbps(webrtc_target_bitrate_kbps)),
         'encoder': _get_active_video_encoder_name() or video_encoder_status.get('preferred', ''),
         'client_up': bool(client_up),
+        'track_stats': track,
         'client_stats': client,
     }
 # Cleaned garbled comment.
@@ -1922,7 +1977,9 @@ def _h264_munge_fmtp_line(line: str, target_fps: int) -> str:
 
 def _webrtc_munge_answer_sdp(sdp: str, bitrate_kbps: int, target_fps: int) -> str:
     """Inject video bitrate/fps hints into SDP answer."""
-    bitrate_kbps = max(500, min(80000, int(bitrate_kbps)))
+    bitrate_kbps = max(500, min(int(webrtc_max_bitrate_kbps), int(bitrate_kbps)))
+    start_bitrate_kbps = max(500, min(int(bitrate_kbps), int(webrtc_start_bitrate_kbps)))
+    min_bitrate_kbps = max(300, min(int(bitrate_kbps), int(_effective_webrtc_min_bitrate_kbps(bitrate_kbps))))
     # Keep SDP framerate hint aligned with codec pipeline capability.
     target_fps = max(15, min(120, int(target_fps)))
     sdp_fps_hint = max(15, min(60, int(target_fps)))
@@ -1961,11 +2018,11 @@ def _webrtc_munge_answer_sdp(sdp: str, bitrate_kbps: int, target_fps: int) -> st
                     line_lower = line.strip().lower()
                     extras = []
                     if "x-google-start-bitrate=" not in line_lower:
-                        extras.append(f"x-google-start-bitrate={bitrate_kbps}")
+                        extras.append(f"x-google-start-bitrate={start_bitrate_kbps}")
                     if "x-google-max-bitrate=" not in line_lower:
                         extras.append(f"x-google-max-bitrate={bitrate_kbps}")
                     if "x-google-min-bitrate=" not in line_lower:
-                        extras.append("x-google-min-bitrate=300")
+                        extras.append(f"x-google-min-bitrate={min_bitrate_kbps}")
                     if extras:
                         line = f"{line};{';'.join(extras)}"
             out.append(line)

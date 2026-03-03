@@ -16,12 +16,30 @@ from .base import Decoder, Encoder
 
 logger = logging.getLogger(__name__)
 LAST_ENCODER_NAME = ""
+FAILED_ENCODERS = set()
+DEFAULT_ENCODER_ORDER = ("h264_nvenc", "h264_qsv", "h264_amf", "h264_mf", "h264_omx", "libx264")
+
+
+def _encoder_order() -> List[str]:
+    raw = (os.getenv("RC_WEBRTC_H264_ENCODER_ORDER", "") or "").strip()
+    if not raw:
+        return list(DEFAULT_ENCODER_ORDER)
+    names = [token.strip().lower() for token in raw.split(",") if token.strip()]
+    out = []
+    for name in names:
+        if name not in out:
+            out.append(name)
+    for name in DEFAULT_ENCODER_ORDER:
+        if name not in out:
+            out.append(name)
+    return out
 
 DEFAULT_BITRATE = 12000000  # 12 Mbps
 MIN_BITRATE = 2000000  # 2 Mbps
-MAX_BITRATE = 80000000  # 80 Mbps
+MAX_BITRATE = 120000000  # 120 Mbps
 HIGHRES_MIN_BITRATE = int(os.getenv("RC_WEBRTC_HIGHRES_MIN_BITRATE_BPS", "12000000"))
 HIGHRES_MIN_PIXELS = int(os.getenv("RC_WEBRTC_HIGHRES_MIN_PIXELS", "3000000"))
+DEFAULT_GOP = max(15, int(os.getenv("RC_WEBRTC_H264_GOP", "60") or "60"))
 
 MAX_FRAME_RATE = 120
 PACKET_MAX = 1300
@@ -128,54 +146,119 @@ class H264Decoder(Decoder):
 def create_encoder_context(
     codec_name: str, width: int, height: int, bitrate: int
 ) -> Tuple[av.CodecContext, bool]:
-    codec = av.CodecContext.create(codec_name, "w")
-    codec.width = width
-    codec.height = height
-    codec.bit_rate = bitrate
-    codec.pix_fmt = "yuv420p"
-    codec.framerate = fractions.Fraction(MAX_FRAME_RATE, 1)
-    codec.time_base = fractions.Fraction(1, MAX_FRAME_RATE)
-    options = {}
+    gop = int(DEFAULT_GOP)
+    pix_fmt = "yuv420p"
+    option_candidates = [{}]
+
     if codec_name == "libx264":
-        options.update(
+        option_candidates = [
             {
                 "tune": "zerolatency",
                 "profile": "baseline",
                 "preset": "ultrafast",
                 "x264-params": (
-                    f"keyint={MAX_FRAME_RATE}:min-keyint={MAX_FRAME_RATE}:"
+                    f"keyint={gop}:min-keyint={gop}:"
                     "scenecut=0:rc-lookahead=0:sync-lookahead=0:bframes=0:"
                     "force-cfr=1:no-mbtree=1:sliced-threads=1"
                 ),
             }
-        )
+        ]
     elif codec_name == "h264_nvenc":
-        options = {
-            "g": str(MAX_FRAME_RATE * 2),
-            "bf": "0",
-        }
+        option_candidates = [
+            {
+                "g": str(gop),
+                "bf": "0",
+                "preset": "p2",
+                "tune": "ull",
+                "rc": "cbr",
+                "zerolatency": "1",
+                "repeat_headers": "1",
+                "aud": "1",
+            },
+            {
+                "g": str(gop),
+                "bf": "0",
+                "preset": "p3",
+                "tune": "ull",
+                "rc": "cbr",
+                "zerolatency": "1",
+                "repeat_headers": "1",
+                "aud": "1",
+            },
+            {"g": str(gop), "bf": "0", "repeat_headers": "1", "aud": "1"},
+            {"g": str(gop), "bf": "0"},
+        ]
     elif codec_name == "h264_qsv":
-        codec.pix_fmt = "nv12"
-        options = {
-            "g": str(MAX_FRAME_RATE * 2),
-            "bf": "0",
-        }
+        pix_fmt = "nv12"
+        option_candidates = [{"g": str(gop), "bf": "0"}]
     elif codec_name == "h264_amf":
-        options = {
-            "g": str(MAX_FRAME_RATE * 2),
-            "bf": "0",
-        }
+        option_candidates = [
+            {
+                "g": str(gop),
+                "bf": "0",
+                "usage": "ultralowlatency",
+                "quality": "speed",
+                "rc": "cbr",
+                "profile": "66",
+                "repeat_headers": "1",
+                "header_insertion_mode": "gop",
+                "aud": "1",
+            },
+            {
+                "g": str(gop),
+                "bf": "0",
+                "usage": "ultralowlatency",
+                "rc": "cbr",
+                "profile": "66",
+                "repeat_headers": "1",
+                "header_insertion_mode": "gop",
+                "aud": "1",
+            },
+            {
+                "g": str(gop),
+                "bf": "0",
+                "profile": "66",
+                "repeat_headers": "1",
+                "header_insertion_mode": "gop",
+                "aud": "1",
+            },
+            {"g": str(gop), "bf": "0"},
+        ]
     elif codec_name == "h264_mf":
         # Media Foundation hardware path: prioritize steady high-fps throughput.
-        options = {
-            "g": str(MAX_FRAME_RATE * 2),
-            "bf": "0",
-            "usage": "ultralowlatency",
-            "low_latency": "1",
-        }
-    codec.options = options
-    codec.open()
-    return codec, codec_name == "h264_omx"
+        option_candidates = [
+            {
+                "g": str(gop),
+                "bf": "0",
+                "usage": "ultralowlatency",
+                "low_latency": "1",
+                "repeat_headers": "1",
+                "aud": "1",
+            },
+            {"g": str(gop), "bf": "0", "usage": "ultralowlatency", "low_latency": "1"},
+            {"g": str(gop), "bf": "0"},
+        ]
+
+    last_error: Optional[Exception] = None
+    for options in option_candidates:
+        codec = av.CodecContext.create(codec_name, "w")
+        codec.width = width
+        codec.height = height
+        codec.bit_rate = bitrate
+        codec.pix_fmt = pix_fmt
+        codec.framerate = fractions.Fraction(MAX_FRAME_RATE, 1)
+        codec.time_base = fractions.Fraction(1, MAX_FRAME_RATE)
+        codec.options = options
+        try:
+            codec.open()
+            return codec, codec_name == "h264_omx"
+        except Exception as e:
+            last_error = e
+            continue
+
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError(f"failed to open encoder: {codec_name}")
 
 
 class H264Encoder(Encoder):
@@ -308,6 +391,7 @@ class H264Encoder(Encoder):
     def _encode_frame(
         self, frame: av.VideoFrame, force_keyframe: bool
     ) -> Iterator[bytes]:
+        global LAST_ENCODER_NAME
         if self.codec:
             needs_reset = (
                 frame.width != self.codec.width
@@ -340,19 +424,30 @@ class H264Encoder(Encoder):
 
         if self.codec is None:
             last_error = None
-            for codec_name in ("h264_nvenc", "h264_qsv", "h264_amf", "h264_mf", "h264_omx", "libx264"):
+            candidates = []
+            if LAST_ENCODER_NAME and LAST_ENCODER_NAME not in FAILED_ENCODERS:
+                candidates.append(LAST_ENCODER_NAME)
+            for name in _encoder_order():
+                if name in FAILED_ENCODERS:
+                    continue
+                if name not in candidates:
+                    candidates.append(name)
+
+            for codec_name in candidates:
                 try:
                     self.codec, self.codec_buffering = create_encoder_context(
                         codec_name, frame.width, frame.height, bitrate=self.target_bitrate
                     )
                     self.codec_name = codec_name
-                    global LAST_ENCODER_NAME
                     LAST_ENCODER_NAME = codec_name
+                    FAILED_ENCODERS.discard(codec_name)
                     logger.info("H264 encoder selected: %s", codec_name)
                     break
                 except Exception as e:
                     last_error = e
                     self.codec = None
+                    FAILED_ENCODERS.add(codec_name)
+                    logger.warning("H264 encoder init failed, blacklisting %s: %s", codec_name, e)
             if self.codec is None:
                 raise last_error
 
