@@ -272,6 +272,7 @@ webrtc_frame_pump = None
 webrtc_sender_ts_catchup = 1.0
 webrtc_sender_ts_lock = threading.Lock()
 webrtc_sender_ts_by_sid = {}
+webrtc_high_delay_guard_state = {}
 
 
 def _estimate_webrtc_bitrate_kbps():
@@ -363,7 +364,7 @@ def _get_active_video_encoder_name():
         return ""
 
 
-audio_enabled = _env_flag("RC_AUDIO_ENABLED", True)
+audio_enabled = _env_flag("RC_AUDIO_ENABLED", False)
 audio_device_name = (os.getenv("RC_AUDIO_DEVICE_NAME", "CABLE Output") or "").strip()
 audio_prefer_wasapi_loopback = _env_flag("RC_AUDIO_PREFER_WASAPI_LOOPBACK", True)
 audio_sample_rate = _env_int("RC_AUDIO_SAMPLE_RATE", 48000, 8000, 192000)
@@ -477,6 +478,7 @@ def _webrtc_sender_ts_cleanup_locked(now_ts: float):
     stale_sids = [sid for sid, item in webrtc_sender_ts_by_sid.items() if float(item.get("ts", 0.0)) < stale_before]
     for sid in stale_sids:
         webrtc_sender_ts_by_sid.pop(sid, None)
+        webrtc_high_delay_guard_state.pop(sid, None)
 
 
 def _webrtc_sender_ts_recompute_locked():
@@ -494,6 +496,7 @@ def _webrtc_sender_ts_remove_sid(sid: str):
         return
     with webrtc_sender_ts_lock:
         webrtc_sender_ts_by_sid.pop(sid, None)
+        webrtc_high_delay_guard_state.pop(sid, None)
         _webrtc_sender_ts_recompute_locked()
 
 
@@ -509,20 +512,38 @@ def _webrtc_sender_ts_update_from_client_stats(stats):
         delay = float((stats or {}).get("playout_delay_ms", 0.0) or 0.0)
     if delay <= 0.0:
         return
+    backlog = float((stats or {}).get("frames_backlog", 0.0) or 0.0)
 
     now_ts = float(time.time())
+    should_reset_peer = False
     with webrtc_sender_ts_lock:
         prev = webrtc_sender_ts_by_sid.get(sid, {})
         prev_factor = float(prev.get("factor", 1.0) or 1.0)
         hold_until = float(prev.get("hold_until", 0.0) or 0.0)
         aggressive_until = float(prev.get("aggressive_until", 0.0) or 0.0)
 
-        # Base proportional target around a 30ms objective.
-        if delay <= 30.0:
+        # Base target around a 24-30ms objective.
+        # Keep the 30-60ms zone more aggressive so delay does not linger near 40ms.
+        if delay <= 22.0:
             target = 1.0
+        elif delay <= 35.0:
+            # 22 -> 1.00, 35 -> 0.95
+            target = 1.0 - (((delay - 22.0) / 13.0) * 0.05)
+        elif delay <= 60.0:
+            # 35 -> 0.95, 60 -> 0.85
+            target = 0.95 - (((delay - 35.0) / 25.0) * 0.10)
+        elif delay <= 100.0:
+            # 60 -> 0.85, 100 -> 0.73
+            target = 0.85 - (((delay - 60.0) / 40.0) * 0.12)
         else:
-            # Delay 30 -> 1.0, delay 250 -> about 0.38 (later clamped by min).
-            target = 1.0 - min(0.70, ((delay - 30.0) / 355.0))
+            # 100 -> 0.73, 360 -> about 0.45 (then clamped by min).
+            target = 0.73 - min(0.28, ((delay - 100.0) / 260.0) * 0.28)
+
+        # If decode backlog appears, tighten sender pacing immediately.
+        if backlog >= 2.0:
+            target = min(target, 0.78)
+        elif backlog >= 1.0:
+            target = min(target, 0.84)
 
         # Enter/extend an anti-rebound hold window when delay is clearly high.
         if delay >= 220.0:
@@ -545,11 +566,11 @@ def _webrtc_sender_ts_update_from_client_stats(stats):
             # Long hold after severe delay spikes: prevents immediate rebound to high delay.
             target = min(target, 0.60)
 
-        # Fast apply when tightening catch-up; slow release when returning to 1.0.
+        # Apply tightening quickly, release slowly to avoid "delay rebounds".
         if target < prev_factor:
-            factor = (prev_factor * 0.55) + (float(target) * 0.45)
+            factor = (prev_factor * 0.40) + (float(target) * 0.60)
         else:
-            factor = (prev_factor * 0.90) + (float(target) * 0.10)
+            factor = (prev_factor * 0.93) + (float(target) * 0.07)
         factor = float(max(float(webrtc_ts_catchup_min), min(1.0, factor)))
         webrtc_sender_ts_by_sid[sid] = {
             "factor": factor,
@@ -558,8 +579,41 @@ def _webrtc_sender_ts_update_from_client_stats(stats):
             "aggressive_until": float(aggressive_until),
             "ts": now_ts,
         }
+
+        guard = dict(webrtc_high_delay_guard_state.get(sid, {}) or {})
+        high_since = float(guard.get("high_since", 0.0) or 0.0)
+        last_reset = float(guard.get("last_reset", 0.0) or 0.0)
+        if delay >= 230.0:
+            if high_since <= 0.0:
+                high_since = now_ts
+        elif delay <= 160.0:
+            high_since = 0.0
+
+        # Persistent high playout delay guard: reset peer occasionally to exit stuck buffering state.
+        if (
+            high_since > 0.0
+            and (now_ts - high_since) >= 6.0
+            and (now_ts - last_reset) >= 45.0
+        ):
+            should_reset_peer = True
+            high_since = 0.0
+            last_reset = now_ts
+
+        webrtc_high_delay_guard_state[sid] = {
+            "high_since": float(high_since),
+            "last_reset": float(last_reset),
+            "ts": now_ts,
+        }
+
         _webrtc_sender_ts_cleanup_locked(now_ts)
         _webrtc_sender_ts_recompute_locked()
+
+    if should_reset_peer and webrtc_loop is not None and sid in webrtc_peers:
+        try:
+            print(f"[DelayGuard] sid={sid[:8]} action=peer_reset delay={delay:.1f}ms")
+            asyncio.run_coroutine_threadsafe(_webrtc_close_peer(sid, keep_frame_pump=True), webrtc_loop)
+        except Exception:
+            pass
 
 
 def _webrtc_sender_ts_get_factor():

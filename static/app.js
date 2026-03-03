@@ -9,6 +9,7 @@ const CONFIG = {
     mouseSensitivity: 3.0,
     deadzone: 0.2,
     maxStickDistance: 90,
+    enableRemoteAudio: false,
     lowLatencyMode: true,  // 浣庡欢杩熸ā寮?
     touchThrottleMs: 8,    // 瑙︽懜鑺傛祦(绾?20Hz)
     gameMode: {
@@ -21,7 +22,7 @@ const CONFIG = {
 
 
 const DEBUG_LOG_ENABLED = false;
-const CLIENT_BUILD = '20260303_latency_restore';
+const CLIENT_BUILD = '20260303_latency_tune2';
 
 function debugLog(...args) {
     if (DEBUG_LOG_ENABLED) {
@@ -277,13 +278,13 @@ function applyVideoReceiverLowLatencyHints(pc, videoTrack = null) {
         if (videoTrack && track && track.id !== videoTrack.id) continue;
         try {
             if ('playoutDelayHint' in transceiver.receiver) {
-                transceiver.receiver.playoutDelayHint = CONFIG.lowLatencyMode ? 0.01 : 0.1;
+                transceiver.receiver.playoutDelayHint = CONFIG.lowLatencyMode ? 0.0 : 0.1;
             }
         } catch (e) {
         }
         try {
             if ('jitterBufferTarget' in transceiver.receiver) {
-                transceiver.receiver.jitterBufferTarget = CONFIG.lowLatencyMode ? 0.01 : 0.08;
+                transceiver.receiver.jitterBufferTarget = CONFIG.lowLatencyMode ? 0.0 : 0.08;
             }
         } catch (e) {
         }
@@ -297,13 +298,16 @@ function applyVideoCatchupRate() {
     if (CONFIG.lowLatencyMode) {
         const delayMs = Number(state.webrtcStats.playoutDelayEwmaMs || state.webrtcStats.playoutDelayMs || 0);
         if (delayMs >= 300) nextRate = 1.75;
-        else if (delayMs >= 220) nextRate = 1.60;
-        else if (delayMs >= 170) nextRate = 1.45;
-        else if (delayMs >= 130) nextRate = 1.32;
-        else if (delayMs >= 95) nextRate = 1.22;
-        else if (delayMs >= 70) nextRate = 1.15;
-        else if (delayMs >= 50) nextRate = 1.10;
-        else if (delayMs >= 35) nextRate = 1.06;
+        else if (delayMs >= 260) nextRate = 1.60;
+        else if (delayMs >= 200) nextRate = 1.45;
+        else if (delayMs >= 150) nextRate = 1.30;
+        else if (delayMs >= 110) nextRate = 1.22;
+        else if (delayMs >= 80) nextRate = 1.16;
+        else if (delayMs >= 60) nextRate = 1.11;
+        else if (delayMs >= 45) nextRate = 1.08;
+        else if (delayMs >= 36) nextRate = 1.05;
+        else if (delayMs >= 30) nextRate = 1.03;
+        else if (delayMs >= 26) nextRate = 1.02;
     }
     if (!Number.isFinite(nextRate) || nextRate <= 0) nextRate = 1.0;
     const prevRate = Number(state.webrtc.playbackRate || 1.0);
@@ -796,7 +800,9 @@ async function startWebRTC() {
         state.webrtc.pc = pc;
 
         pc.addTransceiver('video', { direction: 'recvonly' });
-        pc.addTransceiver('audio', { direction: 'recvonly' });
+        if (CONFIG.enableRemoteAudio) {
+            pc.addTransceiver('audio', { direction: 'recvonly' });
+        }
         applyVideoReceiverLowLatencyHints(pc);
 
         pc.ontrack = (e) => {

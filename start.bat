@@ -65,6 +65,9 @@ if not defined RC_WEBRTC_H264_ENCODER_ORDER (
 if not defined RC_DXGI_OUTPUT_COLOR (
     set "RC_DXGI_OUTPUT_COLOR=RGB"
 )
+if not defined RC_AUDIO_ENABLED (
+    set "RC_AUDIO_ENABLED=0"
+)
 call %PY_CMD% server.py --dxgi %*
 set "EXIT_CODE=%ERRORLEVEL%"
 
