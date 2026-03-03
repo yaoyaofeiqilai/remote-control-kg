@@ -68,6 +68,11 @@ const state = {
         disconnectRestartTimer: null,
         playStartTimer: null,
         playbackRate: 1.0,
+        latencyBadTicks: 0,
+        delayBaselineMs: 0,
+        baselineWarmupUntil: 0,
+        lastSoftFlushAt: 0,
+        lastLatencyRestartAt: 0,
         freezeWatchdogTimer: null,
         hasFrameCallback: false,
     },
@@ -291,11 +296,14 @@ function applyVideoCatchupRate() {
     let nextRate = 1.0;
     if (CONFIG.lowLatencyMode) {
         const delayMs = Number(state.webrtcStats.playoutDelayEwmaMs || state.webrtcStats.playoutDelayMs || 0);
-        if (delayMs >= 220) nextRate = 1.25;
-        else if (delayMs >= 160) nextRate = 1.18;
-        else if (delayMs >= 110) nextRate = 1.12;
-        else if (delayMs >= 70) nextRate = 1.08;
-        else if (delayMs >= 45) nextRate = 1.05;
+        if (delayMs >= 300) nextRate = 1.75;
+        else if (delayMs >= 220) nextRate = 1.60;
+        else if (delayMs >= 170) nextRate = 1.45;
+        else if (delayMs >= 130) nextRate = 1.32;
+        else if (delayMs >= 95) nextRate = 1.22;
+        else if (delayMs >= 70) nextRate = 1.15;
+        else if (delayMs >= 50) nextRate = 1.10;
+        else if (delayMs >= 35) nextRate = 1.06;
     }
     if (!Number.isFinite(nextRate) || nextRate <= 0) nextRate = 1.0;
     const prevRate = Number(state.webrtc.playbackRate || 1.0);
@@ -307,6 +315,87 @@ function applyVideoCatchupRate() {
             videoEl.defaultPlaybackRate = nextRate;
         }
     } catch (e) {
+    }
+}
+
+function softFlushVideoPlayback(reason = '') {
+    const videoEl = document.getElementById('screen-video');
+    if (!videoEl || !state.webrtc.using) return false;
+    const stream = videoEl.srcObject;
+    if (!stream || typeof stream.getVideoTracks !== 'function') return false;
+    const tracks = stream.getVideoTracks();
+    if (!tracks || tracks.length === 0) return false;
+    try {
+        const refreshed = new MediaStream([tracks[0]]);
+        videoEl.srcObject = null;
+        videoEl.srcObject = refreshed;
+        const p = videoEl.play();
+        if (p && typeof p.catch === 'function') p.catch(() => {});
+        state.webrtc.lastSoftFlushAt = Date.now();
+        markWebRTCMediaProgress(true);
+        emit('webrtc_client_event', {
+            type: 'soft_flush',
+            reason: String(reason || ''),
+            delay_ms: Number(state.webrtcStats.playoutDelayEwmaMs || state.webrtcStats.playoutDelayMs || 0),
+            playback_rate: Number(state.webrtc.playbackRate || 1.0),
+            client_build: CLIENT_BUILD,
+        });
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
+function checkWebRTCLatencyDrift() {
+    if (!CONFIG.lowLatencyMode || !state.webrtc.using || !state.webrtc.pc) {
+        state.webrtc.latencyBadTicks = 0;
+        return;
+    }
+    const now = Date.now();
+    const delayMs = Number(state.webrtcStats.playoutDelayEwmaMs || state.webrtcStats.playoutDelayMs || 0);
+    if (!Number.isFinite(delayMs) || delayMs <= 0) {
+        state.webrtc.latencyBadTicks = 0;
+        return;
+    }
+    if (state.webrtc.delayBaselineMs <= 0) {
+        state.webrtc.delayBaselineMs = delayMs;
+        state.webrtc.baselineWarmupUntil = now + 10000;
+    } else {
+        if (now <= Number(state.webrtc.baselineWarmupUntil || 0)) {
+            state.webrtc.delayBaselineMs = Math.min(Number(state.webrtc.delayBaselineMs || delayMs), delayMs);
+        } else if (delayMs < state.webrtc.delayBaselineMs) {
+            state.webrtc.delayBaselineMs = state.webrtc.delayBaselineMs * 0.90 + delayMs * 0.10;
+        }
+    }
+
+    const baseline = Number(state.webrtc.delayBaselineMs || delayMs);
+    const driftMs = Math.max(0, delayMs - baseline);
+    const severe = delayMs >= 220 || driftMs >= 120;
+    const high = delayMs >= 150 || driftMs >= 80;
+    const mid = delayMs >= 100 || driftMs >= 50;
+    const pr = Number(state.webrtc.playbackRate || 1.0);
+
+    if (severe) {
+        state.webrtc.latencyBadTicks += 2;
+    } else if (high) {
+        state.webrtc.latencyBadTicks += 1;
+    } else if (mid && pr >= 1.18) {
+        state.webrtc.latencyBadTicks += 1;
+    } else {
+        state.webrtc.latencyBadTicks = Math.max(0, state.webrtc.latencyBadTicks - 1);
+    }
+
+    if (state.webrtc.latencyBadTicks >= 3) {
+        if ((now - Number(state.webrtc.lastSoftFlushAt || 0)) >= 10000) {
+            softFlushVideoPlayback('latency_drift');
+        }
+    }
+    if (state.webrtc.latencyBadTicks >= 6) {
+        if ((now - Number(state.webrtc.lastLatencyRestartAt || 0)) >= 20000) {
+            state.webrtc.lastLatencyRestartAt = now;
+            state.webrtc.latencyBadTicks = 0;
+            scheduleWebRTCRestart('latency_drift_restart', 800);
+        }
     }
 }
 
@@ -461,6 +550,11 @@ function stopWebRTC() {
     state.webrtc.using = false;
     state.webrtc.hasFrameCallback = false;
     state.webrtc.playbackRate = 1.0;
+    state.webrtc.latencyBadTicks = 0;
+    state.webrtc.delayBaselineMs = 0;
+    state.webrtc.baselineWarmupUntil = 0;
+    state.webrtc.lastSoftFlushAt = 0;
+    state.webrtc.lastLatencyRestartAt = 0;
     state.webrtc.lastMediaProgressAt = 0;
     state.webrtc.lastVideoCurrentTime = 0;
     state.webrtc.stopping = false;
@@ -621,6 +715,7 @@ function startWebRTCStats() {
                     client_build: CLIENT_BUILD,
                 });
                 applyVideoCatchupRate();
+                checkWebRTCLatencyDrift();
             }
 
             if (audioInbound) {
@@ -745,6 +840,10 @@ async function startWebRTC() {
                 videoEl.classList.remove('hidden');
                 screenImg.classList.add('hidden');
                 state.webrtc.using = true;
+                state.webrtc.latencyBadTicks = 0;
+                state.webrtc.delayBaselineMs = 0;
+                state.webrtc.baselineWarmupUntil = Date.now() + 10000;
+                state.webrtc.lastSoftFlushAt = 0;
                 if (state.webrtc.trackWaitTimer) {
                     clearTimeout(state.webrtc.trackWaitTimer);
                     state.webrtc.trackWaitTimer = null;

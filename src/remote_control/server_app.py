@@ -243,6 +243,8 @@ webrtc_target_bitrate_kbps = _env_int("RC_WEBRTC_BITRATE_KBPS", 24000, 500, webr
 webrtc_start_bitrate_kbps = _env_int("RC_WEBRTC_START_BITRATE_KBPS", 24000, 500, webrtc_max_bitrate_kbps)
 webrtc_min_bitrate_kbps = _env_int("RC_WEBRTC_MIN_BITRATE_KBPS", 300, 300, webrtc_max_bitrate_kbps)
 webrtc_bitrate_scale = _env_float("RC_WEBRTC_BITRATE_SCALE", 2.0, 0.5, 3.0)
+webrtc_ts_catchup_enabled = _env_flag("RC_WEBRTC_TS_CATCHUP", True)
+webrtc_ts_catchup_min = _env_float("RC_WEBRTC_TS_CATCHUP_MIN", 0.45, 0.30, 1.0)
 webrtc_force_h264_only = _env_flag("RC_WEBRTC_FORCE_H264_ONLY", True)
 webrtc_h264_conservative_level = _env_flag("RC_WEBRTC_H264_CONSERVATIVE_LEVEL", False)
 webrtc_h264_profile_prefix = (os.getenv("RC_WEBRTC_H264_PROFILE_PREFIX", "42e0") or "42e0").strip().lower()
@@ -267,6 +269,9 @@ webrtc_audio_tracks = {}
 webrtc_loop = None
 webrtc_loop_thread = None
 webrtc_frame_pump = None
+webrtc_sender_ts_catchup = 1.0
+webrtc_sender_ts_lock = threading.Lock()
+webrtc_sender_ts_by_sid = {}
 
 
 def _estimate_webrtc_bitrate_kbps():
@@ -465,6 +470,93 @@ def _video_set_track_stats(stats):
 def _video_snapshot():
     with video_status_lock:
         return dict(video_status)
+
+
+def _webrtc_sender_ts_cleanup_locked(now_ts: float):
+    stale_before = float(now_ts) - 6.0
+    stale_sids = [sid for sid, item in webrtc_sender_ts_by_sid.items() if float(item.get("ts", 0.0)) < stale_before]
+    for sid in stale_sids:
+        webrtc_sender_ts_by_sid.pop(sid, None)
+
+
+def _webrtc_sender_ts_recompute_locked():
+    global webrtc_sender_ts_catchup
+    if not webrtc_ts_catchup_enabled or not webrtc_sender_ts_by_sid:
+        webrtc_sender_ts_catchup = 1.0
+        return
+    factor = min(float(v.get("factor", 1.0) or 1.0) for v in webrtc_sender_ts_by_sid.values())
+    webrtc_sender_ts_catchup = float(max(float(webrtc_ts_catchup_min), min(1.0, factor)))
+
+
+def _webrtc_sender_ts_remove_sid(sid: str):
+    sid = str(sid or "")
+    if not sid:
+        return
+    with webrtc_sender_ts_lock:
+        webrtc_sender_ts_by_sid.pop(sid, None)
+        _webrtc_sender_ts_recompute_locked()
+
+
+def _webrtc_sender_ts_update_from_client_stats(stats):
+    global webrtc_sender_ts_catchup
+    if not webrtc_ts_catchup_enabled:
+        return
+    sid = str((stats or {}).get("sid", "") or "")
+    if not sid:
+        return
+    delay = float((stats or {}).get("playout_delay_ewma_ms", 0.0) or 0.0)
+    if delay <= 0.0:
+        delay = float((stats or {}).get("playout_delay_ms", 0.0) or 0.0)
+    if delay <= 0.0:
+        return
+
+    now_ts = float(time.time())
+    with webrtc_sender_ts_lock:
+        prev = webrtc_sender_ts_by_sid.get(sid, {})
+        prev_factor = float(prev.get("factor", 1.0) or 1.0)
+        hold_until = float(prev.get("hold_until", 0.0) or 0.0)
+
+        # Base proportional target around a 30ms objective.
+        if delay <= 30.0:
+            target = 1.0
+        else:
+            # Delay 30 -> 1.0, delay 250 -> about 0.38 (later clamped by min).
+            target = 1.0 - min(0.70, ((delay - 30.0) / 355.0))
+
+        # Enter/extend an anti-rebound hold window when delay is clearly high.
+        if delay >= 220.0:
+            hold_until = max(hold_until, now_ts + 10.0)
+            target = min(target, 0.48)
+        elif delay >= 170.0:
+            hold_until = max(hold_until, now_ts + 8.0)
+            target = min(target, 0.56)
+        elif delay >= 125.0:
+            hold_until = max(hold_until, now_ts + 6.0)
+            target = min(target, 0.66)
+
+        if now_ts < hold_until:
+            # Keep moderate catch-up active for a short window to avoid quick bounce back.
+            target = min(target, 0.70)
+
+        # Fast apply when tightening catch-up; slow release when returning to 1.0.
+        if target < prev_factor:
+            factor = (prev_factor * 0.55) + (float(target) * 0.45)
+        else:
+            factor = (prev_factor * 0.90) + (float(target) * 0.10)
+        factor = float(max(float(webrtc_ts_catchup_min), min(1.0, factor)))
+        webrtc_sender_ts_by_sid[sid] = {
+            "factor": factor,
+            "delay_ms": float(delay),
+            "hold_until": float(hold_until),
+            "ts": now_ts,
+        }
+        _webrtc_sender_ts_cleanup_locked(now_ts)
+        _webrtc_sender_ts_recompute_locked()
+
+
+def _webrtc_sender_ts_get_factor():
+    with webrtc_sender_ts_lock:
+        return float(webrtc_sender_ts_catchup)
 
 
 def _audio_list_input_devices():
@@ -1532,7 +1624,8 @@ if WEBRTC_AVAILABLE:
             requested_fps = max(15, min(int(webrtc_fps_max), int(webrtc_target_fps)))
             # Keep sender cadence on requested FPS; frame pump always exposes latest frame.
             target_fps = requested_fps
-            ticks_per_frame = max(1, int(self._clock_rate / target_fps))
+            ts_catchup = _webrtc_sender_ts_get_factor()
+            ticks_per_frame = max(1, int((self._clock_rate / target_fps) * ts_catchup))
             wait_s = 0.0
             now_perf = time.perf_counter()
             if self._started_at_perf is None:
@@ -1605,6 +1698,7 @@ if WEBRTC_AVAILABLE:
                 _video_set_track_stats({
                     "recv_fps": round(float(self._recv_fps), 1),
                     "target_fps": int(target_fps),
+                    "ts_catchup": round(float(ts_catchup), 3),
                     "frame_age_ms": round(float(frame_age) * 1000.0, 1) if frame_age != float("inf") else -1.0,
                     "wait_ms": round(float(max(wait_s, 0.0)) * 1000.0, 3),
                     "interval_ms": round(float(interval_ms), 3),
@@ -1769,6 +1863,7 @@ def handle_disconnect():
     print(f"[Socket] client disconnected, connected_clients={connected_clients}")
 
     sid = request.sid
+    _webrtc_sender_ts_remove_sid(str(sid or ""))
     try:
         snapshot = _video_snapshot()
         cstats = snapshot.get("client_stats") or {}
@@ -2166,6 +2261,7 @@ def _webrtc_force_h264_video_only(sdp: str) -> str:
 
 async def _webrtc_close_peer(sid: str, keep_frame_pump: bool = False):
     global webrtc_frame_pump
+    _webrtc_sender_ts_remove_sid(str(sid or ""))
     audio_track = webrtc_audio_tracks.pop(sid, None)
     if audio_track is not None:
         try:
@@ -2336,6 +2432,7 @@ def handle_video_client_stats(data):
         'ts': time.time(),
     }
     _video_set_client_stats(cleaned)
+    _webrtc_sender_ts_update_from_client_stats(cleaned)
 
 
 @socketio.on('set_mode')
