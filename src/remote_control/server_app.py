@@ -515,6 +515,7 @@ def _webrtc_sender_ts_update_from_client_stats(stats):
         prev = webrtc_sender_ts_by_sid.get(sid, {})
         prev_factor = float(prev.get("factor", 1.0) or 1.0)
         hold_until = float(prev.get("hold_until", 0.0) or 0.0)
+        aggressive_until = float(prev.get("aggressive_until", 0.0) or 0.0)
 
         # Base proportional target around a 30ms objective.
         if delay <= 30.0:
@@ -534,9 +535,15 @@ def _webrtc_sender_ts_update_from_client_stats(stats):
             hold_until = max(hold_until, now_ts + 6.0)
             target = min(target, 0.66)
 
+        if delay >= 180.0:
+            aggressive_until = max(aggressive_until, now_ts + 45.0)
+
         if now_ts < hold_until:
             # Keep moderate catch-up active for a short window to avoid quick bounce back.
             target = min(target, 0.70)
+        if now_ts < aggressive_until:
+            # Long hold after severe delay spikes: prevents immediate rebound to high delay.
+            target = min(target, 0.60)
 
         # Fast apply when tightening catch-up; slow release when returning to 1.0.
         if target < prev_factor:
@@ -548,6 +555,7 @@ def _webrtc_sender_ts_update_from_client_stats(stats):
             "factor": factor,
             "delay_ms": float(delay),
             "hold_until": float(hold_until),
+            "aggressive_until": float(aggressive_until),
             "ts": now_ts,
         }
         _webrtc_sender_ts_cleanup_locked(now_ts)
