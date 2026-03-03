@@ -372,7 +372,10 @@ video_status = {
 # Cleaned garbled comment.
 dxgi_camera = None
 dxgi_capture_enabled = webrtc_capture_backend in ("auto", "dxgi")  # Cleaned garbled comment.
-dxgi_capture_target_fps = _env_int("RC_DXGI_CAPTURE_FPS", 120, 30, 240)
+dxgi_capture_target_fps = _env_int("RC_DXGI_CAPTURE_FPS", 60, 30, 240)
+dxgi_output_color = (os.getenv("RC_DXGI_OUTPUT_COLOR", "RGB") or "RGB").strip().upper()
+if dxgi_output_color not in ("RGB", "BGRA"):
+    dxgi_output_color = "RGB"
 dxgi_lock = threading.RLock()
 dxgi_failure_count = 0
 dxgi_retry_after = 0.0
@@ -761,16 +764,13 @@ def init_dxgi_camera():
         try:
             # Cleaned garbled comment.
             try:
-                # BGRA is the native desktop surface format and avoids per-frame RGB slicing.
-                dxgi_camera = dxcam.create(output_color="BGRA")
+                dxgi_camera = dxcam.create(output_color=dxgi_output_color)
             except TypeError:
                 dxgi_camera = dxcam.create()
             try:
                 if hasattr(dxgi_camera, "start"):
-                    target = max(
-                        int(webrtc_target_fps),
-                        min(int(webrtc_fps_max), int(dxgi_capture_target_fps)),
-                    )
+                    requested = max(15, min(int(webrtc_fps_max), int(webrtc_target_fps)))
+                    target = max(30, min(int(dxgi_capture_target_fps), int(requested)))
                     try:
                         dxgi_camera.start(target_fps=target, video_mode=True)
                     except TypeError:
@@ -779,7 +779,10 @@ def init_dxgi_camera():
                 print(f"[DXGI] start failed: {e}")
             dxgi_failure_count = 0
             dxgi_retry_after = 0.0
-            print(f"[DXGI] camera initialized, output={dxgi_camera.width}x{dxgi_camera.height}")
+            print(
+                f"[DXGI] camera initialized, output={dxgi_camera.width}x{dxgi_camera.height}, "
+                f"color={dxgi_output_color}"
+            )
             return True
         except Exception as e:
             print(f"[DXGI] initialization failed: {e}")
@@ -815,10 +818,8 @@ def reconfigure_dxgi_capture_fps():
     with dxgi_lock:
         if dxgi_camera is None:
             return False
-        target = max(
-            int(webrtc_target_fps),
-            min(int(webrtc_fps_max), int(dxgi_capture_target_fps)),
-        )
+        requested = max(15, min(int(webrtc_fps_max), int(webrtc_target_fps)))
+        target = max(30, min(int(dxgi_capture_target_fps), int(requested)))
         try:
             if hasattr(dxgi_camera, "stop"):
                 dxgi_camera.stop()
@@ -931,11 +932,15 @@ def capture_screen_frame_np():
                     if not frame.flags["C_CONTIGUOUS"]:
                         frame = np.ascontiguousarray(frame)
                     return frame, "bgra"
-                if frame.ndim == 3 and frame.shape[2] >= 3:
+                if frame.ndim == 3 and frame.shape[2] == 3:
+                    if frame.flags["C_CONTIGUOUS"]:
+                        return frame, "rgb24"
+                    return np.ascontiguousarray(frame), "rgb24"
+                if frame.ndim == 3 and frame.shape[2] > 3:
                     rgb = frame[:, :, :3]
-                    if not rgb.flags["C_CONTIGUOUS"]:
-                        rgb = np.ascontiguousarray(rgb)
-                    return rgb, "rgb24"
+                    if rgb.flags["C_CONTIGUOUS"]:
+                        return rgb, "rgb24"
+                    return np.ascontiguousarray(rgb), "rgb24"
             return None, None
         except Exception as e:
             handle_dxgi_error(e)
@@ -1567,6 +1572,7 @@ def server_info():
         'mjpeg_enabled': False,
         'webrtc_capture_backend': 'dxgi' if dxgi_capture_enabled else 'mss',
         'dxgi_capture_target_fps': int(dxgi_capture_target_fps),
+        'dxgi_output_color': str(dxgi_output_color),
         'webrtc_fps': webrtc_target_fps,
         'webrtc_fps_max': int(webrtc_fps_max),
         'webrtc_scale': webrtc_scale,
@@ -2119,6 +2125,8 @@ async def _webrtc_handle_offer(sid: str, offer_sdp: str, offer_type: str):
         if pc.connectionState in ("failed", "closed"):
             await _webrtc_close_peer(sid)
     try:
+        if webrtc_force_h264_only:
+            offer_sdp = _webrtc_force_h264_video_only(offer_sdp)
         await pc.setRemoteDescription(RTCSessionDescription(sdp=offer_sdp, type=offer_type))
 
         if webrtc_frame_pump is not None:
@@ -2159,6 +2167,20 @@ async def _webrtc_handle_offer(sid: str, offer_sdp: str, offer_type: str):
                 if _lower.startswith("a=fmtp:") and "profile-level-id=" in _lower:
                     print(f"[WebRTC] answer video fmtp: {_line.strip()}")
                     break
+            _video_section = False
+            _printed_rtpmap = False
+            for _line in answer_sdp.splitlines():
+                _stripped = _line.strip()
+                if _stripped.startswith("m="):
+                    if _video_section and _printed_rtpmap:
+                        break
+                    _video_section = _stripped.startswith("m=video ")
+                    if _video_section:
+                        print(f"[WebRTC] answer video m-line: {_stripped}")
+                    continue
+                if _video_section and _stripped.lower().startswith("a=rtpmap:") and not _printed_rtpmap:
+                    print(f"[WebRTC] answer first rtpmap: {_stripped}")
+                    _printed_rtpmap = True
         except Exception:
             pass
         await pc.setLocalDescription(RTCSessionDescription(sdp=answer_sdp, type=answer.type))
