@@ -216,6 +216,21 @@ try:
 except Exception as e:
     print(f"[Audio] soundcard load failed: {e}")
 
+SYSTEM_AUDIO_CTRL_AVAILABLE = False
+IAudioEndpointVolume = None
+AudioUtilities = None
+CLSCTX_ALL = None
+try:
+    from pycaw.pycaw import AudioUtilities as _AudioUtilities, IAudioEndpointVolume as _IAudioEndpointVolume
+    from comtypes import CLSCTX_ALL as _CLSCTX_ALL
+
+    AudioUtilities = _AudioUtilities
+    IAudioEndpointVolume = _IAudioEndpointVolume
+    CLSCTX_ALL = _CLSCTX_ALL
+    SYSTEM_AUDIO_CTRL_AVAILABLE = True
+except Exception as e:
+    print(f"[Audio] system mute control unavailable: {e}")
+
 # Cleaned garbled comment.
 pyautogui.FAILSAFE = True
 pyautogui.PAUSE = 0.01
@@ -243,6 +258,12 @@ webrtc_target_bitrate_kbps = _env_int("RC_WEBRTC_BITRATE_KBPS", 24000, 500, webr
 webrtc_start_bitrate_kbps = _env_int("RC_WEBRTC_START_BITRATE_KBPS", 24000, 500, webrtc_max_bitrate_kbps)
 webrtc_min_bitrate_kbps = _env_int("RC_WEBRTC_MIN_BITRATE_KBPS", 300, 300, webrtc_max_bitrate_kbps)
 webrtc_bitrate_scale = _env_float("RC_WEBRTC_BITRATE_SCALE", 2.0, 0.5, 3.0)
+webrtc_audio_opus_maxaveragebitrate_bps = _env_int(
+    "RC_WEBRTC_AUDIO_OPUS_MAXAVERAGEBITRATE_BPS",
+    510000,
+    16000,
+    510000,
+)
 webrtc_ts_catchup_enabled = _env_flag("RC_WEBRTC_TS_CATCHUP", True)
 webrtc_ts_catchup_min = _env_float("RC_WEBRTC_TS_CATCHUP_MIN", 0.45, 0.30, 1.0)
 webrtc_force_h264_only = _env_flag("RC_WEBRTC_FORCE_H264_ONLY", True)
@@ -273,6 +294,7 @@ webrtc_sender_ts_catchup = 1.0
 webrtc_sender_ts_lock = threading.Lock()
 webrtc_sender_ts_by_sid = {}
 webrtc_high_delay_guard_state = {}
+audio_transport_by_sid = {}
 
 
 def _estimate_webrtc_bitrate_kbps():
@@ -364,7 +386,7 @@ def _get_active_video_encoder_name():
         return ""
 
 
-audio_enabled = _env_flag("RC_AUDIO_ENABLED", False)
+audio_enabled = _env_flag("RC_AUDIO_ENABLED", True)
 audio_device_name = (os.getenv("RC_AUDIO_DEVICE_NAME", "CABLE Output") or "").strip()
 audio_prefer_wasapi_loopback = _env_flag("RC_AUDIO_PREFER_WASAPI_LOOPBACK", True)
 audio_sample_rate = _env_int("RC_AUDIO_SAMPLE_RATE", 48000, 8000, 192000)
@@ -398,6 +420,8 @@ audio_status = {
 }
 if audio_enabled and not SOUNDDEVICE_AVAILABLE:
     audio_status["last_error"] = "sounddevice_unavailable"
+
+system_audio_lock = threading.Lock()
 
 video_status_lock = threading.Lock()
 video_status = {
@@ -456,6 +480,64 @@ def _audio_set_error(message):
 def _audio_snapshot():
     with audio_status_lock:
         return dict(audio_status)
+
+
+def _system_audio_get_endpoint_volume():
+    if not SYSTEM_AUDIO_CTRL_AVAILABLE or AudioUtilities is None or IAudioEndpointVolume is None or CLSCTX_ALL is None:
+        return None, "system_audio_control_unavailable"
+    try:
+        speakers = AudioUtilities.GetSpeakers()
+        if speakers is None:
+            return None, "no_default_speaker"
+        interface = speakers.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+        endpoint_volume = ctypes.cast(interface, ctypes.POINTER(IAudioEndpointVolume))
+        return endpoint_volume, ""
+    except Exception as e:
+        return None, str(e)
+
+
+def _system_audio_get_state():
+    with system_audio_lock:
+        endpoint_volume, err = _system_audio_get_endpoint_volume()
+        if endpoint_volume is None:
+            return {
+                "available": False,
+                "muted": False,
+                "error": err or "endpoint_unavailable",
+            }
+        try:
+            muted = bool(endpoint_volume.GetMute())
+            return {
+                "available": True,
+                "muted": bool(muted),
+                "error": "",
+            }
+        except Exception as e:
+            return {
+                "available": False,
+                "muted": False,
+                "error": str(e),
+            }
+
+
+def _system_audio_set_mute(muted: bool):
+    with system_audio_lock:
+        endpoint_volume, err = _system_audio_get_endpoint_volume()
+        if endpoint_volume is None:
+            return {
+                "available": False,
+                "muted": False,
+                "error": err or "endpoint_unavailable",
+            }
+        try:
+            endpoint_volume.SetMute(1 if muted else 0, None)
+        except Exception as e:
+            return {
+                "available": False,
+                "muted": False,
+                "error": str(e),
+            }
+    return _system_audio_get_state()
 
 
 def _video_set_client_stats(stats):
@@ -1817,6 +1899,7 @@ def server_info():
         'webrtc_min_bitrate_kbps': int(webrtc_min_bitrate_kbps),
         'webrtc_min_bitrate_effective_kbps': int(_effective_webrtc_min_bitrate_kbps(webrtc_target_bitrate_kbps)),
         'webrtc_bitrate_scale': float(webrtc_bitrate_scale),
+        'webrtc_audio_opus_maxaveragebitrate_bps': int(webrtc_audio_opus_maxaveragebitrate_bps),
         'webrtc_force_h264_only': bool(webrtc_force_h264_only),
         'webrtc_video_pt_count': int(last_video_codec_policy.get('video_pt_count', 0) or 0),
         'webrtc_h264_pt_count': int(last_video_codec_policy.get('h264_pt_count', 0) or 0),
@@ -1832,6 +1915,7 @@ def server_info():
         'video_encoder_effective': active_encoder or video_encoder_status.get('preferred', 'libx264'),
         'video_encoders_available': list(video_encoder_status.get('available', [])),
         'video_hw_encoders_available': list(video_encoder_status.get('hardware_available', [])),
+        'audio_enabled': bool(audio_enabled),
     }
 
 
@@ -1843,6 +1927,7 @@ def audio_info():
     loopback_speakers = _audio_list_loopback_speakers()
     loopback_outputs = _audio_list_wasapi_output_devices()
     status = _audio_snapshot()
+    system_audio_state = _system_audio_get_state()
     return {
         'enabled': bool(audio_enabled),
         'webrtc_available': bool(WEBRTC_AVAILABLE),
@@ -1854,6 +1939,9 @@ def audio_info():
         'channels': int(audio_channels),
         'frame_ms': int(audio_frame_ms),
         'frame_samples': int(audio_frame_samples),
+        'opus_maxaveragebitrate_bps': int(webrtc_audio_opus_maxaveragebitrate_bps),
+        'transport_default_enabled': False,
+        'system_mute': system_audio_state,
         'status': status,
         'devices': devices,
         'loopback_speakers': loopback_speakers,
@@ -1864,6 +1952,7 @@ def audio_info():
 @app.route('/api/audio_health')
 def audio_health():
     status = _audio_snapshot()
+    system_audio_state = _system_audio_get_state()
     client = status.get('client_stats') or {}
     up = bool(
         status.get('capture_running')
@@ -1884,6 +1973,7 @@ def audio_health():
         'discontinuities': int(status.get('discontinuities', 0)),
         'last_rms': float(status.get('last_rms', 0.0)),
         'last_error': status.get('last_error', ''),
+        'system_mute': system_audio_state,
         'client_stats': client,
     }
 
@@ -1921,13 +2011,25 @@ def handle_connect():
     """Client connected."""
     global connected_clients
     connected_clients += 1
+    sid = request.sid
+    audio_transport_by_sid.setdefault(sid, False)
+    system_audio_state = _system_audio_get_state()
     print(f"[Socket] client connected, connected_clients={connected_clients}")
     emit('connected', {
         'status': 'ok',
         'screen_width': pyautogui.size().width,
-        'screen_height': pyautogui.size().height
+        'screen_height': pyautogui.size().height,
+        'audio_feature_enabled': bool(audio_enabled),
+        'audio_transport_enabled': bool(audio_transport_by_sid.get(sid, False)),
+        'system_mute_available': bool(system_audio_state.get("available", False)),
+        'system_muted': bool(system_audio_state.get("muted", False)),
     })
     emit('xinput_status', {'available': bool(XINPUT_AVAILABLE)})
+    emit('audio_transport_updated', {
+        'enabled': bool(audio_transport_by_sid.get(sid, False)),
+        'needs_restart': False,
+    })
+    emit('system_mute_updated', system_audio_state)
 
 
 @socketio.on('disconnect')
@@ -1938,6 +2040,7 @@ def handle_disconnect():
     print(f"[Socket] client disconnected, connected_clients={connected_clients}")
 
     sid = request.sid
+    audio_transport_by_sid.pop(sid, None)
     _webrtc_sender_ts_remove_sid(str(sid or ""))
     try:
         snapshot = _video_snapshot()
@@ -2164,8 +2267,58 @@ def _h264_munge_fmtp_line(line: str, target_fps: int) -> str:
     return f"{head} {';'.join(params)}"
 
 
+def _sdp_set_fmtp_params(line: str, updates: dict):
+    if " " not in line:
+        return line
+    head, body = line.split(" ", 1)
+    params = [tok.strip() for tok in body.split(";") if tok.strip()]
+    by_key = {}
+    for token in params:
+        if "=" not in token:
+            continue
+        k, v = token.split("=", 1)
+        by_key[k.strip().lower()] = (k.strip(), v.strip())
+
+    for key, value in updates.items():
+        key_l = str(key).strip().lower()
+        by_key[key_l] = (str(key).strip(), str(value).strip())
+
+    ordered = []
+    seen = set()
+    for token in params:
+        if "=" not in token:
+            ordered.append(token)
+            continue
+        k, _ = token.split("=", 1)
+        k_l = k.strip().lower()
+        if k_l in seen:
+            continue
+        if k_l in by_key:
+            keep_k, keep_v = by_key[k_l]
+            ordered.append(f"{keep_k}={keep_v}")
+            seen.add(k_l)
+    for k_l, (keep_k, keep_v) in by_key.items():
+        if k_l in seen:
+            continue
+        ordered.append(f"{keep_k}={keep_v}")
+    return f"{head} {';'.join(ordered)}"
+
+
+def _opus_munge_fmtp_line(line: str) -> str:
+    return _sdp_set_fmtp_params(
+        line,
+        {
+            "maxaveragebitrate": str(int(webrtc_audio_opus_maxaveragebitrate_bps)),
+            "stereo": "1",
+            "sprop-stereo": "1",
+            "cbr": "0",
+            "useinbandfec": "1",
+        },
+    )
+
+
 def _webrtc_munge_answer_sdp(sdp: str, bitrate_kbps: int, target_fps: int) -> str:
-    """Inject video bitrate/fps hints into SDP answer."""
+    """Inject video/audio hints into SDP answer."""
     bitrate_kbps = max(500, min(int(webrtc_max_bitrate_kbps), int(bitrate_kbps)))
     start_bitrate_kbps = max(500, min(int(bitrate_kbps), int(webrtc_start_bitrate_kbps)))
     min_bitrate_kbps = max(300, min(int(bitrate_kbps), int(_effective_webrtc_min_bitrate_kbps(bitrate_kbps))))
@@ -2176,7 +2329,9 @@ def _webrtc_munge_answer_sdp(sdp: str, bitrate_kbps: int, target_fps: int) -> st
     lines = sdp.splitlines()
     out = []
     in_video = False
+    in_audio = False
     framerate_set = False
+    opus_pt_set = set()
 
     for line in lines:
         stripped = line.strip()
@@ -2186,11 +2341,35 @@ def _webrtc_munge_answer_sdp(sdp: str, bitrate_kbps: int, target_fps: int) -> st
             if in_video and not framerate_set:
                 out.append(f"a=framerate:{sdp_fps_hint}")
             in_video = stripped.startswith("m=video")
+            in_audio = stripped.startswith("m=audio")
             framerate_set = False
+            opus_pt_set.clear()
             out.append(line)
             if in_video:
                 out.append(f"b=AS:{bitrate_kbps}")
                 out.append(f"b=TIAS:{bitrate_kbps * 1000}")
+            continue
+
+        if in_audio:
+            if lower.startswith("a=rtpmap:") and " opus/" in f" {lower}":
+                try:
+                    body = stripped.split(":", 1)[1]
+                    pt = body.split(" ", 1)[0].strip()
+                    if pt:
+                        opus_pt_set.add(pt)
+                except Exception:
+                    pass
+                out.append(line)
+                continue
+            if lower.startswith("a=fmtp:"):
+                try:
+                    body = stripped.split(":", 1)[1]
+                    pt = body.split(" ", 1)[0].strip()
+                except Exception:
+                    pt = ""
+                if pt and pt in opus_pt_set:
+                    line = _opus_munge_fmtp_line(line)
+            out.append(line)
             continue
 
         if in_video:
@@ -2334,6 +2513,20 @@ def _webrtc_force_h264_video_only(sdp: str) -> str:
     return sep.join(out) + sep
 
 
+def _offer_has_active_audio_mline(sdp: str) -> bool:
+    try:
+        for line in str(sdp or "").splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("m=audio "):
+                continue
+            parts = stripped.split()
+            if len(parts) >= 2 and parts[1] != "0":
+                return True
+        return False
+    except Exception:
+        return False
+
+
 async def _webrtc_close_peer(sid: str, keep_frame_pump: bool = False):
     global webrtc_frame_pump
     _webrtc_sender_ts_remove_sid(str(sid or ""))
@@ -2380,7 +2573,9 @@ async def _webrtc_handle_offer(sid: str, offer_sdp: str, offer_type: str):
             video_track = ScreenVideoTrack(webrtc_frame_pump)
             _webrtc_attach_track(pc, "video", video_track)
 
-        if audio_enabled:
+        audio_transport_enabled = bool(audio_transport_by_sid.get(sid, False))
+        offer_has_audio = _offer_has_active_audio_mline(offer_sdp)
+        if audio_enabled and audio_transport_enabled and offer_has_audio:
             if SOUNDDEVICE_AVAILABLE and WEBRTC_AVAILABLE:
                 try:
                     audio_track = SystemAudioTrack()
@@ -2396,6 +2591,10 @@ async def _webrtc_handle_offer(sid: str, offer_sdp: str, offer_type: str):
                     print(f"[Audio] track init failed: {e}")
             else:
                 _audio_set_error("sounddevice_unavailable")
+        else:
+            _audio_set_status(capture_running=False)
+            if audio_transport_enabled and (not offer_has_audio):
+                _audio_set_error("audio_mline_missing_in_offer")
 
         _webrtc_apply_codec_preferences(pc)
 
@@ -2479,6 +2678,39 @@ def handle_audio_client_stats(data):
         'error': str(data.get('error', '') or ''),
     }
     _audio_set_status(client_stats=cleaned)
+
+
+@socketio.on('set_audio_transport')
+def handle_set_audio_transport(data):
+    sid = request.sid
+    enabled = bool((data or {}).get('enabled', False))
+    audio_transport_by_sid[sid] = bool(enabled)
+    emit('audio_transport_updated', {
+        'enabled': bool(enabled),
+        'needs_restart': True,
+    })
+
+
+@socketio.on('get_audio_transport')
+def handle_get_audio_transport(data=None):
+    sid = request.sid
+    emit('audio_transport_updated', {
+        'enabled': bool(audio_transport_by_sid.get(sid, False)),
+        'needs_restart': False,
+    })
+
+
+@socketio.on('set_system_mute')
+def handle_set_system_mute(data):
+    muted = bool((data or {}).get('muted', False))
+    state = _system_audio_set_mute(bool(muted))
+    socketio.emit('system_mute_updated', state)
+
+
+@socketio.on('get_system_mute')
+def handle_get_system_mute(data=None):
+    state = _system_audio_get_state()
+    emit('system_mute_updated', state)
 
 
 @socketio.on('video_client_stats')

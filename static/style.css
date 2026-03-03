@@ -391,6 +391,55 @@ body {
     gap: 12px;
 }
 
+.tools-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 128px;
+    gap: 12px;
+    align-items: start;
+}
+
+.tools-main .setting-item {
+    margin-bottom: 10px;
+}
+
+.audio-side-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 10px;
+    border-radius: 14px;
+    background: rgba(0, 0, 0, 0.2);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.audio-side-title {
+    font-size: 12px;
+    color: var(--ui-muted);
+    letter-spacing: 0.6px;
+}
+
+.audio-side-item {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.audio-side-item label {
+    margin: 0;
+    font-size: 12px;
+    color: var(--ui-text);
+}
+
+.audio-side-item span {
+    text-align: center;
+    font-size: 11px;
+    color: var(--ui-accent-2);
+    background: rgba(108, 92, 231, 0.12);
+    border: 1px solid rgba(108, 92, 231, 0.22);
+    padding: 4px 8px;
+    border-radius: 10px;
+}
+
 .setting-item label {
     flex: 0 0 86px;
     font-size: 13px;
@@ -413,7 +462,8 @@ body {
     border-radius: 10px;
 }
 
-#settings-panel .setting-item input[type="checkbox"] {
+#settings-panel .setting-item input[type="checkbox"],
+#settings-panel .audio-side-item input[type="checkbox"] {
     appearance: none;
     -webkit-appearance: none;
     width: 44px;
@@ -427,7 +477,8 @@ body {
     flex: 0 0 auto;
 }
 
-#settings-panel .setting-item input[type="checkbox"]::after {
+#settings-panel .setting-item input[type="checkbox"]::after,
+#settings-panel .audio-side-item input[type="checkbox"]::after {
     content: '';
     position: absolute;
     top: 50%;
@@ -441,12 +492,14 @@ body {
     transition: left 0.18s ease;
 }
 
-#settings-panel .setting-item input[type="checkbox"]:checked {
+#settings-panel .setting-item input[type="checkbox"]:checked,
+#settings-panel .audio-side-item input[type="checkbox"]:checked {
     background: var(--ui-accent-grad);
     border-color: rgba(108, 92, 231, 0.55);
 }
 
-#settings-panel .setting-item input[type="checkbox"]:checked::after {
+#settings-panel .setting-item input[type="checkbox"]:checked::after,
+#settings-panel .audio-side-item input[type="checkbox"]:checked::after {
     left: 21px;
 }
 
@@ -819,6 +872,16 @@ body {
 }
 
 /* 工具类 */
+@media (max-width: 560px) {
+    .tools-layout {
+        grid-template-columns: 1fr;
+    }
+
+    .audio-side-controls {
+        margin-top: 4px;
+    }
+}
+
 .hidden {
     display: none !important;
 }

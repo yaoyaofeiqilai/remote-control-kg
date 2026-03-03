@@ -40,7 +40,7 @@ echo [INFO] Python runtime:
 call %PY_CMD% --version
 
 echo [INFO] Verifying dependencies...
-call %PY_CMD% -c "import flask, flask_socketio, flask_cors, pyautogui, PIL, mss, numpy, sounddevice, aiortc, av, aiohttp" >nul 2>&1
+call %PY_CMD% -c "import flask, flask_socketio, flask_cors, pyautogui, PIL, mss, numpy, sounddevice, pycaw, comtypes, aiortc, av, aiohttp" >nul 2>&1
 if errorlevel 1 (
     echo [WARN] Missing dependencies. Installing from requirements.txt...
     call %PY_CMD% -m pip install --disable-pip-version-check -r requirements.txt
@@ -66,7 +66,7 @@ if not defined RC_DXGI_OUTPUT_COLOR (
     set "RC_DXGI_OUTPUT_COLOR=RGB"
 )
 if not defined RC_AUDIO_ENABLED (
-    set "RC_AUDIO_ENABLED=0"
+    set "RC_AUDIO_ENABLED=1"
 )
 call %PY_CMD% server.py --dxgi %*
 set "EXIT_CODE=%ERRORLEVEL%"

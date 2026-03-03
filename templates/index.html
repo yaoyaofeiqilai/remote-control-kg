@@ -6,7 +6,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <title>远程控制</title>
-    <link rel="stylesheet" href="/static/style.css?v=20260303_latency_tune2c">
+    <link rel="stylesheet" href="/static/style.css?v=20260303_audio_fix2">
 </head>
 <body>
     <div id="app">
@@ -161,7 +161,9 @@
                     <div class="setting-section">
                         <label>工具</label>
 
-                        <div class="setting-item">
+                        <div class="tools-layout">
+                            <div class="tools-main">
+                                <div class="setting-item">
                             <label>键盘</label>
                             <input type="checkbox" id="keyboard-toggle-btn">
                             <span id="keyboard-toggle-text">关闭</span>
@@ -177,6 +179,22 @@
                             <label>低延迟</label>
                             <input type="checkbox" id="low-latency-mode" checked>
                             <span>启用</span>
+                        </div>
+                            </div>
+
+                            <div class="audio-side-controls">
+                                <div class="audio-side-title">声音</div>
+                                <div class="audio-side-item">
+                                    <label for="system-mute-toggle">电脑静音</label>
+                                    <input type="checkbox" id="system-mute-toggle">
+                                    <span id="system-mute-text">不可用</span>
+                                </div>
+                                <div class="audio-side-item">
+                                    <label for="audio-transport-toggle">声音传输</label>
+                                    <input type="checkbox" id="audio-transport-toggle">
+                                    <span id="audio-transport-text">关闭</span>
+                                </div>
+                            </div>
                         </div>
                     </div>
 
@@ -237,6 +255,6 @@
     </div>
 
     <script src="/static/socket.io.min.js"></script>
-    <script src="/static/app.js?v=20260303_latency_tune2c"></script>
+    <script src="/static/app.js?v=20260303_audio_fix2"></script>
 </body>
 </html>

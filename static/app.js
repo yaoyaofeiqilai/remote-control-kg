@@ -22,7 +22,7 @@ const CONFIG = {
 
 
 const DEBUG_LOG_ENABLED = false;
-const CLIENT_BUILD = '20260303_latency_tune2c';
+const CLIENT_BUILD = '20260303_audio_fix2';
 
 function debugLog(...args) {
     if (DEBUG_LOG_ENABLED) {
@@ -81,6 +81,12 @@ const state = {
         unlocked: false,
         hasTrack: false,
         lastError: '',
+        transportEnabled: false,
+        transportPending: false,
+        featureEnabled: true,
+        systemMuteAvailable: false,
+        systemMuted: false,
+        systemMutePending: false,
     },
     webrtcStats: {
         bitrateMbps: 0,
@@ -171,10 +177,54 @@ function getAudioElement() {
     return document.getElementById('remote-audio');
 }
 
+function setAudioTransportLocalState(enabled, pending = false) {
+    state.audio.transportEnabled = !!enabled;
+    state.audio.transportPending = !!pending;
+    CONFIG.enableRemoteAudio = !!enabled;
+}
+
+function setSystemMuteLocalState(muted, available = true, pending = false) {
+    state.audio.systemMuted = !!muted;
+    state.audio.systemMuteAvailable = !!available;
+    state.audio.systemMutePending = !!pending;
+}
+
+function updateAudioControlUI() {
+    const txToggle = document.getElementById('audio-transport-toggle');
+    const txText = document.getElementById('audio-transport-text');
+    if (txToggle) {
+        txToggle.checked = !!state.audio.transportEnabled;
+        txToggle.disabled = !state.audio.featureEnabled || !!state.audio.transportPending;
+    }
+    if (txText) {
+        if (!state.audio.featureEnabled) {
+            txText.textContent = '不可用';
+        } else {
+            const suffix = state.audio.transportPending ? '...' : '';
+            txText.textContent = (state.audio.transportEnabled ? '开启' : '关闭') + suffix;
+        }
+    }
+
+    const muteToggle = document.getElementById('system-mute-toggle');
+    const muteText = document.getElementById('system-mute-text');
+    if (muteToggle) {
+        muteToggle.checked = !!state.audio.systemMuted;
+        muteToggle.disabled = !state.audio.systemMuteAvailable || !!state.audio.systemMutePending;
+    }
+    if (muteText) {
+        if (!state.audio.systemMuteAvailable) {
+            muteText.textContent = '不可用';
+        } else {
+            const suffix = state.audio.systemMutePending ? '...' : '';
+            muteText.textContent = (state.audio.systemMuted ? '静音' : '正常') + suffix;
+        }
+    }
+}
+
 function updateAudioUnlockButton() {
     const btn = document.getElementById('audio-unlock-btn');
     if (!btn) return;
-    if (state.audio.unlocked || !state.audio.hasTrack) {
+    if (!state.audio.transportEnabled || state.audio.unlocked || !state.audio.hasTrack) {
         btn.classList.add('hidden');
         return;
     }
@@ -214,6 +264,7 @@ async function unlockRemoteAudio(reportError = true) {
 }
 
 function attachRemoteAudioStream(stream) {
+    if (!state.audio.transportEnabled) return;
     const audioEl = getAudioElement();
     if (!audioEl || !stream) return;
     if (audioEl.srcObject !== stream) {
@@ -819,6 +870,13 @@ async function startWebRTC() {
             if (state.webrtc.stopping) return;
             const stream = (e.streams && e.streams[0]) ? e.streams[0] : null;
             if (e.track && e.track.kind === 'audio') {
+                if (!state.audio.transportEnabled) {
+                    try {
+                        e.track.stop();
+                    } catch (e2) {
+                    }
+                    return;
+                }
                 const audioStream = stream || new MediaStream([e.track]);
                 attachRemoteAudioStream(audioStream);
                 return;
@@ -968,11 +1026,51 @@ function initAudioUnlockControls() {
 
     updateAudioUnlockButton();
 }
+
+function setAudioTransportEnabled(enabled, restartNow = true) {
+    if (!state.audio.featureEnabled) {
+        setAudioTransportLocalState(false, false);
+        updateAudioControlUI();
+        updateAudioUnlockButton();
+        return;
+    }
+    const next = !!enabled;
+    if (!next) {
+        const audioEl = getAudioElement();
+        if (audioEl) {
+            try {
+                audioEl.pause();
+            } catch (e) {
+            }
+            audioEl.srcObject = null;
+        }
+        state.audio.hasTrack = false;
+        state.audio.unlocked = false;
+        state.audio.lastError = '';
+    }
+    setAudioTransportLocalState(next, true);
+    updateAudioControlUI();
+    updateAudioUnlockButton();
+    emit('set_audio_transport', { enabled: next });
+    if (restartNow && state.connected && state.webrtc.using) {
+        scheduleWebRTCRestart('audio_transport_toggle', 200);
+    }
+}
+
+function setSystemMuteRequested(muted) {
+    setSystemMuteLocalState(!!muted, state.audio.systemMuteAvailable, true);
+    updateAudioControlUI();
+    emit('set_system_mute', { muted: !!muted });
+}
 // ============ Socket.IO 连接 ============
 function initSocket() {
     const statusEl = document.getElementById('connection-status');
     statusEl.textContent = '连接中...';
     statusEl.className = 'connecting';
+
+    setAudioTransportLocalState(false, false);
+    setSystemMuteLocalState(false, false, false);
+    updateAudioControlUI();
 
     state.socket = io({
         transports: ['websocket', 'polling'],
@@ -1005,6 +1103,9 @@ function initSocket() {
         statusEl.textContent = '已断开';
         statusEl.className = 'disconnected';
         stopWebRTC();
+        state.audio.transportPending = false;
+        state.audio.systemMutePending = false;
+        updateAudioControlUI();
     });
 
     state.socket.on('connect_error', (err) => {
@@ -1017,6 +1118,18 @@ function initSocket() {
         state.screenWidth = data.screen_width;
         state.screenHeight = data.screen_height;
         debugLog('[Socket] screen size:', state.screenWidth, 'x', state.screenHeight);
+
+        state.audio.featureEnabled = !!(data && data.audio_feature_enabled !== false);
+        const desiredAudioTransport = !!state.audio.transportEnabled && !!state.audio.featureEnabled;
+        setAudioTransportLocalState(desiredAudioTransport, false);
+        setSystemMuteLocalState(
+            !!(data && data.system_muted),
+            !!(data && data.system_mute_available),
+            false
+        );
+        updateAudioControlUI();
+        emit('set_audio_transport', { enabled: desiredAudioTransport });
+        emit('get_system_mute');
 
         // 初始化虚拟鼠标位置到屏幕中心
         if (!state.virtualMouse) {
@@ -1040,6 +1153,32 @@ function initSocket() {
         }
 
         startVideoTransport();
+    });
+
+    state.socket.on('audio_transport_updated', (data) => {
+        const enabled = !!(data && data.enabled) && !!state.audio.featureEnabled;
+        setAudioTransportLocalState(enabled, false);
+        if (!enabled) {
+            const audioEl = getAudioElement();
+            if (audioEl) {
+                try {
+                    audioEl.pause();
+                } catch (e) {
+                }
+                audioEl.srcObject = null;
+            }
+            state.audio.hasTrack = false;
+            state.audio.unlocked = false;
+        }
+        updateAudioControlUI();
+        updateAudioUnlockButton();
+    });
+
+    state.socket.on('system_mute_updated', (data) => {
+        const available = !!(data && data.available);
+        const muted = !!(data && data.muted);
+        setSystemMuteLocalState(muted, available, false);
+        updateAudioControlUI();
     });
 
     state.socket.on('fps_updated', (data) => {
@@ -2630,6 +2769,23 @@ function initSettings() {
             debugLog('[Config] low latency mode:', CONFIG.lowLatencyMode);
         });
     }
+
+    const audioTransportToggle = document.getElementById('audio-transport-toggle');
+    if (audioTransportToggle) {
+        audioTransportToggle.checked = !!state.audio.transportEnabled;
+        audioTransportToggle.addEventListener('change', () => {
+            setAudioTransportEnabled(!!audioTransportToggle.checked, true);
+        });
+    }
+
+    const systemMuteToggle = document.getElementById('system-mute-toggle');
+    if (systemMuteToggle) {
+        systemMuteToggle.checked = !!state.audio.systemMuted;
+        systemMuteToggle.addEventListener('change', () => {
+            setSystemMuteRequested(!!systemMuteToggle.checked);
+        });
+    }
+    updateAudioControlUI();
 
     // 娓告垙妯″紡涓撶敤璁剧疆
     initGameModeSettings();
