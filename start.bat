@@ -74,8 +74,27 @@ if not defined RC_AUDIO_TRANSPORT_DEFAULT_ENABLED (
 if not defined RC_WEBRTC_AUDIO_OPUS_MAXAVERAGEBITRATE_BPS (
     set "RC_WEBRTC_AUDIO_OPUS_MAXAVERAGEBITRATE_BPS=200000"
 )
+if not defined RC_SERVER_AUTORESTART (
+    set "RC_SERVER_AUTORESTART=1"
+)
+if not defined RC_SERVER_RESTART_DELAY_SEC (
+    set "RC_SERVER_RESTART_DELAY_SEC=2"
+)
+
+set "EXIT_CODE=0"
+
+:server_loop
 call %PY_CMD% server.py --dxgi %*
 set "EXIT_CODE=%ERRORLEVEL%"
+
+if "%RC_SERVER_AUTORESTART%"=="1" (
+    if not "%EXIT_CODE%"=="0" (
+        echo [WARN] Server exited unexpectedly with code %EXIT_CODE%.
+        echo [INFO] Restarting in %RC_SERVER_RESTART_DELAY_SEC%s... (set RC_SERVER_AUTORESTART=0 to disable)
+        timeout /t %RC_SERVER_RESTART_DELAY_SEC% /nobreak >nul
+        goto :server_loop
+    )
+)
 
 if not "%EXIT_CODE%"=="0" (
     echo [ERROR] Server exited with code %EXIT_CODE%.

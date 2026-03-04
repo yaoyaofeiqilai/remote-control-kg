@@ -22,7 +22,7 @@ const CONFIG = {
 
 
 const DEBUG_LOG_ENABLED = false;
-const CLIENT_BUILD = '20260304_audio_fix5';
+const CLIENT_BUILD = '20260304_audio_fix6';
 
 function debugLog(...args) {
     if (DEBUG_LOG_ENABLED) {
@@ -809,6 +809,27 @@ function startWebRTCStats() {
                 });
             }
         } catch (e) {
+            emit('video_client_stats', {
+                bytes_received: state.webrtcStats.lastBytes || 0,
+                packets_lost: state.webrtcStats.packetsLost || 0,
+                frames_decoded: state.webrtcStats.framesDecoded || 0,
+                frames_dropped: state.webrtcStats.framesDropped || 0,
+                frames_per_second: state.webrtcStats.framesPerSecond || 0,
+                decode_ms: state.webrtcStats.decodeMs || 0,
+                jitter_ms: state.webrtcStats.jitterMs || 0,
+                playout_delay_ms: state.webrtcStats.playoutDelayMs || 0,
+                playout_delay_ewma_ms: state.webrtcStats.playoutDelayEwmaMs || 0,
+                processing_delay_ms: state.webrtcStats.processingDelayMs || 0,
+                frames_received: state.webrtcStats.framesReceived || 0,
+                frames_backlog: state.webrtcStats.framesBacklog || 0,
+                playback_rate: state.webrtc.playbackRate || 1.0,
+                codec: '',
+                decoder_impl: '',
+                power_efficient: false,
+                stats_stale: true,
+                client_build: CLIENT_BUILD,
+            });
+            checkWebRTCLatencyDrift();
         }
     }, 1000);
 }

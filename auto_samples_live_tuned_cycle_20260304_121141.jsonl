@@ -1,0 +1,100 @@
+{"t_ms":1772597505194,"i":0,"client_up":false,"client_sid":"","client_ts":0.0,"bitrate_kbps":66355.0,"runtime_bitrate_scale":1.0,"recv_fps":0.0,"ts_catchup":0.0,"playout_delay_ms":0.0,"playout_delay_ewma_ms":0.0,"jitter_ms":0.0,"frames_backlog":0.0,"playback_rate":1.0,"client_build":"","audio_capture_running":false,"audio_client_up":false}
+{"t_ms":1772597506196,"i":1,"client_up":false,"client_sid":"","client_ts":0.0,"bitrate_kbps":66355.0,"runtime_bitrate_scale":1.0,"recv_fps":0.0,"ts_catchup":0.0,"playout_delay_ms":0.0,"playout_delay_ewma_ms":0.0,"jitter_ms":0.0,"frames_backlog":0.0,"playback_rate":1.0,"client_build":""}
+{"t_ms":1772597507195,"i":2,"client_up":false,"client_sid":"","client_ts":0.0,"bitrate_kbps":66355.0,"runtime_bitrate_scale":1.0,"recv_fps":0.0,"ts_catchup":0.0,"playout_delay_ms":0.0,"playout_delay_ewma_ms":0.0,"jitter_ms":0.0,"frames_backlog":0.0,"playback_rate":1.0,"client_build":""}
+{"t_ms":1772597508195,"i":3,"client_up":false,"client_sid":"","client_ts":0.0,"bitrate_kbps":66355.0,"runtime_bitrate_scale":1.0,"recv_fps":0.0,"ts_catchup":0.0,"playout_delay_ms":0.0,"playout_delay_ewma_ms":0.0,"jitter_ms":0.0,"frames_backlog":0.0,"playback_rate":1.0,"client_build":""}
+{"t_ms":1772597509195,"i":4,"client_up":false,"client_sid":"","client_ts":0.0,"bitrate_kbps":41406.0,"runtime_bitrate_scale":0.8,"recv_fps":0.0,"ts_catchup":0.0,"playout_delay_ms":0.0,"playout_delay_ewma_ms":0.0,"jitter_ms":0.0,"frames_backlog":0.0,"playback_rate":1.0,"client_build":""}
+{"t_ms":1772597510195,"i":5,"client_up":false,"client_sid":"","client_ts":0.0,"bitrate_kbps":41406.0,"runtime_bitrate_scale":0.8,"recv_fps":0.0,"ts_catchup":0.0,"playout_delay_ms":0.0,"playout_delay_ewma_ms":0.0,"jitter_ms":0.0,"frames_backlog":0.0,"playback_rate":1.0,"client_build":""}
+{"t_ms":1772597511195,"i":6,"client_up":false,"client_sid":"","client_ts":0.0,"bitrate_kbps":41406.0,"runtime_bitrate_scale":0.8,"recv_fps":0.0,"ts_catchup":0.0,"playout_delay_ms":0.0,"playout_delay_ewma_ms":0.0,"jitter_ms":0.0,"frames_backlog":0.0,"playback_rate":1.0,"client_build":""}
+{"t_ms":1772597512196,"i":7,"client_up":false,"client_sid":"","client_ts":0.0,"bitrate_kbps":41406.0,"runtime_bitrate_scale":0.8,"recv_fps":0.0,"ts_catchup":0.0,"playout_delay_ms":0.0,"playout_delay_ewma_ms":0.0,"jitter_ms":0.0,"frames_backlog":0.0,"playback_rate":1.0,"client_build":""}
+{"t_ms":1772597513195,"i":8,"client_up":false,"client_sid":"","client_ts":0.0,"bitrate_kbps":41406.0,"runtime_bitrate_scale":0.8,"recv_fps":0.0,"ts_catchup":0.0,"playout_delay_ms":0.0,"playout_delay_ewma_ms":0.0,"jitter_ms":0.0,"frames_backlog":0.0,"playback_rate":1.0,"client_build":""}
+{"t_ms":1772597514196,"i":9,"client_up":false,"client_sid":"","client_ts":0.0,"bitrate_kbps":41406.0,"runtime_bitrate_scale":0.8,"recv_fps":0.0,"ts_catchup":0.0,"playout_delay_ms":0.0,"playout_delay_ewma_ms":0.0,"jitter_ms":0.0,"frames_backlog":0.0,"playback_rate":1.0,"client_build":""}
+{"t_ms":1772597515195,"i":10,"client_up":false,"client_sid":"","client_ts":0.0,"bitrate_kbps":41406.0,"runtime_bitrate_scale":0.8,"recv_fps":0.0,"ts_catchup":1.0,"playout_delay_ms":0.0,"playout_delay_ewma_ms":0.0,"jitter_ms":0.0,"frames_backlog":0.0,"playback_rate":1.0,"client_build":"","audio_capture_running":true,"audio_client_up":false}
+{"t_ms":1772597516195,"i":11,"client_up":true,"client_sid":"RUOr6IrmLYiLkpDmAAAB","client_ts":1772597515.2605941,"bitrate_kbps":51757.0,"runtime_bitrate_scale":1.0,"recv_fps":45.8,"ts_catchup":1.0,"playout_delay_ms":21.01963157894737,"playout_delay_ewma_ms":21.01963157894737,"jitter_ms":7.0,"frames_backlog":0.0,"playback_rate":1.0,"client_build":"20260304_audio_fix5"}
+{"t_ms":1772597517195,"i":12,"client_up":true,"client_sid":"RUOr6IrmLYiLkpDmAAAB","client_ts":1772597516.2580128,"bitrate_kbps":34677.0,"runtime_bitrate_scale":0.67,"recv_fps":45.6,"ts_catchup":0.828,"playout_delay_ms":13.328399999999998,"playout_delay_ewma_ms":19.865946842105263,"jitter_ms":10.0,"frames_backlog":0.0,"playback_rate":1.0,"client_build":"20260304_audio_fix5"}
+{"t_ms":1772597518196,"i":13,"client_up":true,"client_sid":"RUOr6IrmLYiLkpDmAAAB","client_ts":1772597517.2577176,"bitrate_kbps":34677.0,"runtime_bitrate_scale":0.6716500000000001,"recv_fps":44.9,"ts_catchup":0.842,"playout_delay_ms":7.997039999999998,"playout_delay_ewma_ms":18.085610815789476,"jitter_ms":6.0,"frames_backlog":0.0,"playback_rate":1.0,"client_build":"20260304_audio_fix5"}
+{"t_ms":1772597519195,"i":14,"client_up":true,"client_sid":"RUOr6IrmLYiLkpDmAAAB","client_ts":1772597518.2552187,"bitrate_kbps":34677.0,"runtime_bitrate_scale":0.6629125,"recv_fps":44.9,"ts_catchup":0.794,"playout_delay_ms":5.299136363636361,"playout_delay_ewma_ms":16.167639647966507,"jitter_ms":9.0,"frames_backlog":0.0,"playback_rate":1.0,"client_build":"20260304_audio_fix5"}
+{"t_ms":1772597520195,"i":15,"client_up":true,"client_sid":"RUOr6IrmLYiLkpDmAAAB","client_ts":1772597519.2544558,"bitrate_kbps":34677.0,"runtime_bitrate_scale":0.660728125,"recv_fps":44.2,"ts_catchup":0.783,"playout_delay_ms":5.0236,"playout_delay_ewma_ms":14.496033700771529,"jitter_ms":8.0,"frames_backlog":0.0,"playback_rate":1.0,"client_build":"20260304_audio_fix5"}
+{"t_ms":1772597521196,"i":16,"client_up":true,"client_sid":"RUOr6IrmLYiLkpDmAAAB","client_ts":1772597520.254145,"bitrate_kbps":34677.0,"runtime_bitrate_scale":0.66018203125,"recv_fps":45.9,"ts_catchup":0.781,"playout_delay_ms":9.680159090909095,"playout_delay_ewma_ms":13.773652509292164,"jitter_ms":9.0,"frames_backlog":0.0,"playback_rate":1.0,"client_build":"20260304_audio_fix5"}
+{"t_ms":1772597522195,"i":17,"client_up":true,"client_sid":"RUOr6IrmLYiLkpDmAAAB","client_ts":1772597521.2553992,"bitrate_kbps":34677.0,"runtime_bitrate_scale":0.6600455078125,"recv_fps":45.2,"ts_catchup":0.78,"playout_delay_ms":6.893170212765958,"playout_delay_ewma_ms":12.741580164813234,"jitter_ms":9.0,"frames_backlog":0.0,"playback_rate":1.0,"client_build":"20260304_audio_fix5"}
+{"t_ms":1772597523195,"i":18,"client_up":true,"client_sid":"RUOr6IrmLYiLkpDmAAAB","client_ts":1772597522.2544658,"bitrate_kbps":30278.0,"runtime_bitrate_scale":0.5850113769531251,"recv_fps":44.2,"ts_catchup":0.78,"playout_delay_ms":4.135902127659575,"playout_delay_ewma_ms":11.450728459240183,"jitter_ms":11.0,"frames_backlog":0.0,"playback_rate":1.0,"client_build":"20260304_audio_fix5"}
+{"t_ms":1772597524196,"i":19,"client_up":true,"client_sid":"RUOr6IrmLYiLkpDmAAAB","client_ts":1772597523.2588513,"bitrate_kbps":29308.0,"runtime_bitrate_scale":0.5662528442382813,"recv_fps":46.0,"ts_catchup":0.718,"playout_delay_ms":2.726155555555554,"playout_delay_ewma_ms":10.14204252368749,"jitter_ms":13.0,"frames_backlog":0.0,"playback_rate":1.0,"client_build":"20260304_audio_fix5"}
+{"t_ms":1772597525195,"i":20,"client_up":true,"client_sid":"RUOr6IrmLYiLkpDmAAAB","client_ts":1772597524.2529461,"bitrate_kbps":29308.0,"runtime_bitrate_scale":0.5615632110595703,"recv_fps":45.0,"ts_catchup":0.719,"playout_delay_ms":2.7273555555555635,"playout_delay_ewma_ms":9.0298394784677,"jitter_ms":10.0,"frames_backlog":0.0,"playback_rate":1.0,"client_build":"20260304_audio_fix5","audio_capture_running":true,"audio_client_up":true}
+{"t_ms":1772597526195,"i":21,"client_up":true,"client_sid":"RUOr6IrmLYiLkpDmAAAB","client_ts":1772597525.2546442,"bitrate_kbps":29308.0,"runtime_bitrate_scale":0.5630397628936767,"recv_fps":44.7,"ts_catchup":0.72,"playout_delay_ms":10.847311111111107,"playout_delay_ewma_ms":9.30246022336421,"jitter_ms":9.0,"frames_backlog":0.0,"playback_rate":1.0,"client_build":"20260304_audio_fix5"}
+{"t_ms":1772597527196,"i":22,"client_up":true,"client_sid":"RUOr6IrmLYiLkpDmAAAB","client_ts":1772597526.2656798,"bitrate_kbps":29308.0,"runtime_bitrate_scale":0.5607599407234192,"recv_fps":44.9,"ts_catchup":0.721,"playout_delay_ms":6.508386666666664,"playout_delay_ewma_ms":8.883349189859578,"jitter_ms":10.0,"frames_backlog":0.0,"playback_rate":1.0,"client_build":"20260304_audio_fix5"}
+{"t_ms":1772597528196,"i":23,"client_up":true,"client_sid":"RUOr6IrmLYiLkpDmAAAB","client_ts":1772597527.2540395,"bitrate_kbps":29308.0,"runtime_bitrate_scale":0.5622485416125679,"recv_fps":45.0,"ts_catchup":0.722,"playout_delay_ms":3.905031999999998,"playout_delay_ewma_ms":8.136601611380641,"jitter_ms":9.0,"frames_backlog":0.0,"playback_rate":1.0,"client_build":"20260304_audio_fix5"}
+{"t_ms":1772597529195,"i":24,"client_up":true,"client_sid":"RUOr6IrmLYiLkpDmAAAB","client_ts":1772597528.2541187,"bitrate_kbps":29308.0,"runtime_bitrate_scale":0.5655148134883794,"recv_fps":44.2,"ts_catchup":0.728,"playout_delay_ms":2.7021111111111136,"playout_delay_ewma_ms":7.321428036340212,"jitter_ms":7.0,"frames_backlog":0.0,"playback_rate":1.0,"client_build":"20260304_audio_fix5"}
+{"t_ms":1772597530195,"i":25,"client_up":true,"client_sid":"RUOr6IrmLYiLkpDmAAAB","client_ts":1772597529.261534,"bitrate_kbps":29308.0,"runtime_bitrate_scale":0.5669320912860537,"recv_fps":46.0,"ts_catchup":0.729,"playout_delay_ms":4.399022222222213,"playout_delay_ewma_ms":6.883067164222512,"jitter_ms":9.0,"frames_backlog":0.0,"playback_rate":1.0,"client_build":"20260304_audio_fix5"}
+{"t_ms":1772597531195,"i":26,"client_up":true,"client_sid":"RUOr6IrmLYiLkpDmAAAB","client_ts":1772597530.2550936,"bitrate_kbps":29308.0,"runtime_bitrate_scale":0.567428109916763,"recv_fps":44.2,"ts_catchup":0.691,"playout_delay_ms":19.102704545454536,"playout_delay_ewma_ms":8.716012771407314,"jitter_ms":6.0,"frames_backlog":0.0,"playback_rate":1.0,"client_build":"20260304_audio_fix5"}
+{"t_ms":1772597532195,"i":27,"client_up":true,"client_sid":"RUOr6IrmLYiLkpDmAAAB","client_ts":1772597531.252541,"bitrate_kbps":29308.0,"runtime_bitrate_scale":0.5706166882680116,"recv_fps":45.2,"ts_catchup":0.691,"playout_delay_ms":11.46162272727272,"playout_delay_ewma_ms":9.127854264787125,"jitter_ms":6.0,"frames_backlog":0.0,"playback_rate":1.0,"client_build":"20260304_audio_fix5"}
+{"t_ms":1772597533195,"i":28,"client_up":true,"client_sid":"RUOr6IrmLYiLkpDmAAAB","client_ts":1772597532.2570536,"bitrate_kbps":29308.0,"runtime_bitrate_scale":0.5719574379439915,"recv_fps":45.0,"ts_catchup":0.691,"playout_delay_ms":6.8769736363636325,"playout_delay_ewma_ms":8.7902221705236,"jitter_ms":9.0,"frames_backlog":0.0,"playback_rate":1.0,"client_build":"20260304_audio_fix5"}
+{"t_ms":1772597534195,"i":29,"client_up":true,"client_sid":"RUOr6IrmLYiLkpDmAAAB","client_ts":1772597533.2592359,"bitrate_kbps":29308.0,"runtime_bitrate_scale":0.5750780763748317,"recv_fps":45.5,"ts_catchup":0.691,"playout_delay_ms":4.612195652173915,"playout_delay_ewma_ms":8.163518192771146,"jitter_ms":6.0,"frames_backlog":0.0,"playback_rate":1.0,"client_build":"20260304_audio_fix5"}
+{"t_ms":1772597535196,"i":30,"client_up":true,"client_sid":"RUOr6IrmLYiLkpDmAAAB","client_ts":1772597534.2533696,"bitrate_kbps":29308.0,"runtime_bitrate_scale":0.5763519052292092,"recv_fps":45.1,"ts_catchup":0.692,"playout_delay_ms":4.043186046511626,"playout_delay_ewma_ms":7.545468370832218,"jitter_ms":9.0,"frames_backlog":0.0,"playback_rate":1.0,"client_build":"20260304_audio_fix5","audio_capture_running":true,"audio_client_up":true}
+{"t_ms":1772597536195,"i":31,"err":"poll_failed","msg":"timed out"}
+{"t_ms":1772597537703,"i":32,"err":"poll_failed","msg":"[WinError 10054] 远程主机强迫关闭了一个现有的连接。"}
+{"t_ms":1772597538870,"i":33,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597540371,"i":34,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597541873,"i":35,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597543378,"i":36,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597544881,"i":37,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597546383,"i":38,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597547898,"i":39,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597549402,"i":40,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597550916,"i":41,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597552430,"i":42,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597553945,"i":43,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597555459,"i":44,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597556961,"i":45,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597558464,"i":46,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597559968,"i":47,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597561470,"i":48,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597562972,"i":49,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597564485,"i":50,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597565996,"i":51,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597567503,"i":52,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597569015,"i":53,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597570516,"i":54,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597572031,"i":55,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597573545,"i":56,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597575049,"i":57,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597576556,"i":58,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597578060,"i":59,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597579570,"i":60,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597581082,"i":61,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597582583,"i":62,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597584089,"i":63,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597585591,"i":64,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597587092,"i":65,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597588597,"i":66,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597590101,"i":67,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597591615,"i":68,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597593125,"i":69,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597594630,"i":70,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597596144,"i":71,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597597655,"i":72,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597599168,"i":73,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597600671,"i":74,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597602172,"i":75,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597603674,"i":76,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597605177,"i":77,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597606683,"i":78,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597608187,"i":79,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597609702,"i":80,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597611202,"i":81,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597612715,"i":82,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597614221,"i":83,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597615728,"i":84,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597617229,"i":85,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597618735,"i":86,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597620250,"i":87,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597621753,"i":88,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597623257,"i":89,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597624762,"i":90,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597626264,"i":91,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597627779,"i":92,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597629292,"i":93,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597630802,"i":94,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597632317,"i":95,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597633820,"i":96,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597635328,"i":97,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597636834,"i":98,"err":"poll_failed","msg":"<urlopen error timed out>"}
+{"t_ms":1772597638337,"i":99,"err":"poll_failed","msg":"<urlopen error timed out>"}

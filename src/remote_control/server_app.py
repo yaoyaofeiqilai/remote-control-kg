@@ -270,6 +270,7 @@ webrtc_audio_opus_maxaveragebitrate_bps = _env_int(
 )
 webrtc_ts_catchup_enabled = _env_flag("RC_WEBRTC_TS_CATCHUP", True)
 webrtc_ts_catchup_min = _env_float("RC_WEBRTC_TS_CATCHUP_MIN", 0.50, 0.30, 1.0)
+webrtc_delay_peer_reset_enabled = _env_flag("RC_WEBRTC_DELAY_PEER_RESET", False)
 webrtc_force_h264_only = _env_flag("RC_WEBRTC_FORCE_H264_ONLY", True)
 webrtc_h264_conservative_level = _env_flag("RC_WEBRTC_H264_CONSERVATIVE_LEVEL", False)
 webrtc_h264_profile_prefix = (os.getenv("RC_WEBRTC_H264_PROFILE_PREFIX", "42e0") or "42e0").strip().lower()
@@ -636,6 +637,7 @@ def _webrtc_sender_ts_update_from_client_stats(stats):
     backlog = float((stats or {}).get("frames_backlog", 0.0) or 0.0)
     jitter_ms = float((stats or {}).get("jitter_ms", 0.0) or 0.0)
     playback_rate = float((stats or {}).get("playback_rate", 1.0) or 1.0)
+    stats_stale = bool((stats or {}).get("stats_stale", False))
 
     now_ts = float(time.time())
     should_reset_peer = False
@@ -701,6 +703,10 @@ def _webrtc_sender_ts_update_from_client_stats(stats):
                 hold_until = max(hold_until, now_ts + 5.0)
                 bw_hold_until = max(bw_hold_until, now_ts + 8.0)
                 target = min(target, 0.68)
+            if stats_stale and delay >= 140.0:
+                hold_until = max(hold_until, now_ts + 6.0)
+                bw_hold_until = max(bw_hold_until, now_ts + 8.0)
+                target = min(target, 0.55)
 
             if delay >= critical_delay:
                 hold_until = max(hold_until, now_ts + 10.0)
@@ -741,13 +747,13 @@ def _webrtc_sender_ts_update_from_client_stats(stats):
         if not webrtc_runtime_bitrate_enabled:
             bw_target = 1.0
         elif delay >= (critical_delay + 30.0) or jitter_ms >= 20.0 or playback_rate >= 1.28 or backlog >= 1.4:
-            bw_target = 0.36
+            bw_target = 0.28
             bw_hold_until = max(bw_hold_until, now_ts + 30.0)
         elif delay >= critical_delay or jitter_ms >= 14.0 or playback_rate >= 1.20 or backlog >= 1.0:
-            bw_target = 0.46
+            bw_target = 0.36
             bw_hold_until = max(bw_hold_until, now_ts + 24.0)
         elif delay >= high_delay or jitter_ms >= 10.0 or playback_rate >= 1.12 or backlog >= 0.7:
-            bw_target = 0.56
+            bw_target = 0.48
             bw_hold_until = max(bw_hold_until, now_ts + 16.0)
         elif delay >= mid_delay or jitter_ms >= 8.0 or playback_rate >= 1.07 or backlog >= 0.4:
             bw_target = 0.66
@@ -760,12 +766,16 @@ def _webrtc_sender_ts_update_from_client_stats(stats):
         else:
             bw_target = 1.0
 
+        if stats_stale and delay >= 140.0:
+            bw_target = min(bw_target, 0.30)
+            bw_hold_until = max(bw_hold_until, now_ts + 10.0)
+
         if delay_rise >= 20.0:
-            bw_target = min(bw_target, 0.50)
+            bw_target = min(bw_target, 0.40)
             bw_hold_until = max(bw_hold_until, now_ts + 16.0)
             aggressive_until = max(aggressive_until, now_ts + 20.0)
         elif delay_rise >= 12.0:
-            bw_target = min(bw_target, 0.60)
+            bw_target = min(bw_target, 0.50)
             bw_hold_until = max(bw_hold_until, now_ts + 10.0)
 
         if now_ts < bw_hold_until:
@@ -807,7 +817,7 @@ def _webrtc_sender_ts_update_from_client_stats(stats):
         guard = dict(webrtc_high_delay_guard_state.get(sid, {}) or {})
         high_since = float(guard.get("high_since", 0.0) or 0.0)
         last_reset = float(guard.get("last_reset", 0.0) or 0.0)
-        if delay >= 260.0 or (delay >= 220.0 and playback_rate >= 1.24):
+        if delay >= 240.0 or (delay >= 200.0 and playback_rate >= 1.30) or (stats_stale and delay >= 180.0 and playback_rate >= 1.20):
             if high_since <= 0.0:
                 high_since = now_ts
         elif delay <= 155.0:
@@ -815,8 +825,9 @@ def _webrtc_sender_ts_update_from_client_stats(stats):
 
         # Persistent high playout delay guard: reset peer occasionally to exit stuck buffering state.
         if (
-            high_since > 0.0
-            and (now_ts - high_since) >= 8.0
+            webrtc_delay_peer_reset_enabled
+            and high_since > 0.0
+            and (now_ts - high_since) >= 3.0
             and (now_ts - last_reset) >= 55.0
         ):
             should_reset_peer = True
@@ -2054,6 +2065,7 @@ def server_info():
         'webrtc_runtime_bitrate_scale': float(webrtc_runtime_bitrate_scale),
         'webrtc_runtime_bitrate_min_scale': float(webrtc_runtime_bitrate_min_scale),
         'webrtc_runtime_bitrate_idle_scale': float(webrtc_runtime_bitrate_idle_scale),
+        'webrtc_delay_peer_reset_enabled': bool(webrtc_delay_peer_reset_enabled),
         'webrtc_audio_transport_bitrate_cap_scale': float(webrtc_audio_transport_bitrate_cap_scale),
         'webrtc_audio_opus_maxaveragebitrate_bps': int(webrtc_audio_opus_maxaveragebitrate_bps),
         'webrtc_force_h264_only': bool(webrtc_force_h264_only),
@@ -2892,6 +2904,7 @@ def handle_video_client_stats(data):
         'codec': str(data.get('codec', '') or ''),
         'decoder_impl': str(data.get('decoder_impl', '') or ''),
         'power_efficient': bool(data.get('power_efficient', False)),
+        'stats_stale': bool(data.get('stats_stale', False)),
         'client_build': str(data.get('client_build', '') or '')[:64],
         'sid': request.sid,
         'ts': time.time(),
