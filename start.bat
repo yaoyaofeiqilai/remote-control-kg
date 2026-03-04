@@ -71,6 +71,9 @@ if not defined RC_AUDIO_ENABLED (
 if not defined RC_AUDIO_TRANSPORT_DEFAULT_ENABLED (
     set "RC_AUDIO_TRANSPORT_DEFAULT_ENABLED=1"
 )
+if not defined RC_ARTIFACTS_DIR (
+    set "RC_ARTIFACTS_DIR=artifacts"
+)
 if not defined RC_WEBRTC_AUDIO_OPUS_MAXAVERAGEBITRATE_BPS (
     set "RC_WEBRTC_AUDIO_OPUS_MAXAVERAGEBITRATE_BPS=200000"
 )
@@ -80,6 +83,10 @@ if not defined RC_SERVER_AUTORESTART (
 if not defined RC_SERVER_RESTART_DELAY_SEC (
     set "RC_SERVER_RESTART_DELAY_SEC=2"
 )
+if not exist "%RC_ARTIFACTS_DIR%" mkdir "%RC_ARTIFACTS_DIR%" >nul 2>&1
+if not exist "%RC_ARTIFACTS_DIR%\\logs" mkdir "%RC_ARTIFACTS_DIR%\\logs" >nul 2>&1
+if not exist "%RC_ARTIFACTS_DIR%\\samples" mkdir "%RC_ARTIFACTS_DIR%\\samples" >nul 2>&1
+if not exist "%RC_ARTIFACTS_DIR%\\pids" mkdir "%RC_ARTIFACTS_DIR%\\pids" >nul 2>&1
 
 set "EXIT_CODE=0"
 

@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
+*.pid
 
 .venv/
 venv/
@@ -14,3 +15,18 @@ env/
 *.log
 *.tmp
 *.bak
+
+# runtime artifacts
+artifacts/
+auto_*.jsonl
+auto_*.log
+auto_*.err.log
+auto_*.out.log
+tmp_*.jsonl
+tmp_*.log
+tmp_*.err.log
+tmp_*.out.log
+*_server.err.log
+*_server.out.log
+*.e2e_server.pid
+.tmp_av*/

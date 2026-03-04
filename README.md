@@ -25,6 +25,7 @@ A LAN remote-control server for controlling a Windows PC from a tablet/phone bro
   - Auto-detects Python 3.12.
   - Checks/install dependencies when missing.
   - Starts server with `--dxgi` by default.
+  - Initializes `artifacts/` output directories (`logs`, `samples`, `pids`, `baseline`).
 - `start_admin.bat`
   - Compatibility wrapper that always starts admin flow.
 
@@ -52,6 +53,11 @@ What it does:
 - `tools/diagnostics/audio_smoke.py`
 - `tools/diagnostics/webrtc_audio_e2e.py`
 - `tools/diagnostics/soak_30m.py`
+
+Diagnostics output defaults:
+- logs: `artifacts/logs/`
+- sampled metrics: `artifacts/samples/`
+- pids: `artifacts/pids/`
 
 ## Audio (VB-CABLE Preferred, Auto Fallback)
 
@@ -100,3 +106,12 @@ start.bat
 
 - Keep usage inside trusted LAN environments.
 - For UAC popup capture/control reliability, run as administrator.
+
+## Maintenance Cleanup
+
+Use the cleanup utility to remove stale runtime artifacts and old handoff files.
+
+```bat
+python tools/maintenance/cleanup_repo.py
+python tools/maintenance/cleanup_repo.py --apply --keep-handoffs 3
+```

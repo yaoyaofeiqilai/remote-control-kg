@@ -33,35 +33,6 @@ def debug_log(message):
     if DEBUG_LOG_ENABLED:
         print(message)
 
-
-def _env_flag(name, default):
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() not in ("0", "false", "off", "no")
-
-
-def _env_int(name, default, minimum, maximum):
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    try:
-        value = int(raw)
-    except Exception:
-        return default
-    return max(minimum, min(maximum, value))
-
-
-def _env_float(name, default, minimum, maximum):
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    try:
-        value = float(raw)
-    except Exception:
-        return default
-    return max(minimum, min(maximum, value))
-
 # Cleaned garbled comment.
 DXCAM_AVAILABLE = False
 DXCAM_PATCHED = False
@@ -131,6 +102,10 @@ from flask import Flask, render_template, request
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 import pyautogui
+try:
+    from .config import env_flag as _env_flag, env_int as _env_int, env_float as _env_float
+except Exception:
+    from config import env_flag as _env_flag, env_int as _env_int, env_float as _env_float
 
 # Cleaned garbled comment.
 try:
@@ -235,6 +210,31 @@ except Exception as e:
 pyautogui.FAILSAFE = True
 pyautogui.PAUSE = 0.01
 
+_screen_size_lock = threading.Lock()
+_screen_size_cached = None
+_screen_size_cached_ts = 0.0
+
+
+def _get_screen_size(refresh_interval_s: float = 1.0):
+    """Cache pyautogui.size() to avoid repeated high-frequency system calls."""
+    global _screen_size_cached, _screen_size_cached_ts
+    now = time.time()
+    with _screen_size_lock:
+        if (
+            _screen_size_cached is not None
+            and (now - float(_screen_size_cached_ts)) < float(refresh_interval_s)
+        ):
+            return _screen_size_cached
+        try:
+            size = pyautogui.size()
+            _screen_size_cached = size
+            _screen_size_cached_ts = now
+            return size
+        except Exception:
+            if _screen_size_cached is not None:
+                return _screen_size_cached
+            return pyautogui.size()
+
 # Cleaned garbled comment.
 connected_clients = 0
 quality = _env_int("RC_QUALITY", 95, 10, 95)  # Cleaned garbled comment.
@@ -247,7 +247,7 @@ if webrtc_capture_backend not in ("auto", "dxgi", "mss"):
 webrtc_fps_max = _env_int("RC_WEBRTC_FPS_MAX", 120, 30, 240)
 webrtc_target_fps = _env_int("RC_WEBRTC_FPS", 45, 5, webrtc_fps_max)
 fps = int(webrtc_target_fps)
-_screen_size = pyautogui.size()
+_screen_size = _get_screen_size(refresh_interval_s=0.0)
 webrtc_scale = _env_float("RC_WEBRTC_SCALE", 1.0, 0.25, 1.0)
 webrtc_max_width = _env_int("RC_WEBRTC_MAX_WIDTH", int(_screen_size.width), 320, 7680)
 webrtc_max_height = _env_int("RC_WEBRTC_MAX_HEIGHT", int(_screen_size.height), 240, 4320)
@@ -306,7 +306,7 @@ audio_transport_by_sid = {}
 def _estimate_webrtc_bitrate_kbps():
     """Estimate a sane video bitrate target from quality/fps/scale."""
     try:
-        size = pyautogui.size()
+        size = _get_screen_size()
         screen_w = int(size.width)
         screen_h = int(size.height)
     except Exception:
@@ -1322,7 +1322,7 @@ def get_mss():
             if len(monitors) > 1:
                 # Prefer a single physical monitor close to OS-reported screen size.
                 try:
-                    screen = pyautogui.size()
+                    screen = _get_screen_size()
                     sw = int(screen.width)
                     sh = int(screen.height)
                     best = None
@@ -2045,7 +2045,7 @@ def server_info():
         'ip': get_local_ip(),
         'port': 5000,
         'clients': connected_clients,
-        'screen_size': pyautogui.size(),
+        'screen_size': _get_screen_size(),
         'quality': quality,
         'fps': fps,
         'mjpeg_enabled': False,
@@ -2187,8 +2187,8 @@ def handle_connect():
     print(f"[Socket] client connected, connected_clients={connected_clients}")
     emit('connected', {
         'status': 'ok',
-        'screen_width': pyautogui.size().width,
-        'screen_height': pyautogui.size().height,
+        'screen_width': _get_screen_size().width,
+        'screen_height': _get_screen_size().height,
         'audio_feature_enabled': bool(audio_enabled),
         'audio_transport_enabled': bool(audio_transport_by_sid.get(sid, False)),
         'system_mute_available': bool(system_audio_state.get("available", False)),
@@ -2372,7 +2372,7 @@ def _h264_level_limits_for_target(target_w: int, target_h: int, target_fps: int)
 def _h264_munge_fmtp_line(line: str, target_fps: int) -> str:
     global last_h264_signal
     try:
-        screen = pyautogui.size()
+        screen = _get_screen_size()
         sw = int(screen.width)
         sh = int(screen.height)
     except Exception:
@@ -2936,7 +2936,9 @@ def handle_mouse_move(data):
         x = data.get('x', 0)
         y = data.get('y', 0)
         # Cleaned garbled comment.
-        screen_width, screen_height = pyautogui.size()
+        screen = _get_screen_size()
+        screen_width = int(screen.width)
+        screen_height = int(screen.height)
         x = max(0, min(x, screen_width))
         y = max(0, min(y, screen_height))
 
@@ -3498,7 +3500,7 @@ def main():
     print("=" * 50)
     print(f"  Host IP: {ip}")
     print(f"  Port: {port}")
-    print(f"  Screen size: {pyautogui.size()}")
+    print(f"  Screen size: {_get_screen_size()}")
     print(f"  Capture backend pref: {webrtc_capture_backend}")
     print(f"  Capture mode: {'DXGI (hardware)' if dxgi_camera else 'MSS (software)'}")
     print(f"  Video encoder preferred: {video_encoder_status.get('preferred', 'libx264')}")
@@ -3541,5 +3543,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-

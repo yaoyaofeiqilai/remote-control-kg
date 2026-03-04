@@ -1,14 +1,30 @@
 param(
-    [string]$PidFile = '.live_server.pid',
+    [string]$PidFile = 'live_server.pid',
     [string]$OutLog = 'live_tuned_server.out.log',
     [string]$ErrLog = 'live_tuned_server.err.log',
     [string]$ServerArgs = 'server.py --dxgi',
-    [int]$ReadyWaitSec = 30
+    [int]$ReadyWaitSec = 30,
+    [string]$ArtifactsDir = ''
 )
 
 $ErrorActionPreference = 'Stop'
-
 $startedAt = Get-Date
+
+if ([string]::IsNullOrWhiteSpace($ArtifactsDir)) {
+    $ArtifactsDir = $env:RC_ARTIFACTS_DIR
+}
+if ([string]::IsNullOrWhiteSpace($ArtifactsDir)) {
+    $ArtifactsDir = 'artifacts'
+}
+
+$logsDir = Join-Path $ArtifactsDir 'logs'
+$pidsDir = Join-Path $ArtifactsDir 'pids'
+New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
+New-Item -ItemType Directory -Path $pidsDir -Force | Out-Null
+
+if (-not [IO.Path]::IsPathRooted($PidFile)) { $PidFile = Join-Path $pidsDir $PidFile }
+if (-not [IO.Path]::IsPathRooted($OutLog)) { $OutLog = Join-Path $logsDir $OutLog }
+if (-not [IO.Path]::IsPathRooted($ErrLog)) { $ErrLog = Join-Path $logsDir $ErrLog }
 
 if (Test-Path $PidFile) {
     try {

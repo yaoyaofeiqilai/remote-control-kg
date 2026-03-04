@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import statistics
 import time
 import urllib.error
@@ -129,7 +130,14 @@ def main() -> int:
     interval = max(0.2, float(args.interval))
     timeout = max(0.5, float(args.timeout))
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    sample_file = args.output.strip() or f"auto_samples_live_tuned_{ts}.jsonl"
+    if args.output.strip():
+        sample_file = args.output.strip()
+    else:
+        artifacts_dir = (os.getenv("RC_ARTIFACTS_DIR", "artifacts") or "artifacts").strip() or "artifacts"
+        sample_file = os.path.join(artifacts_dir, "samples", f"auto_samples_live_tuned_{ts}.jsonl")
+    sample_dir = os.path.dirname(os.path.abspath(sample_file))
+    if sample_dir:
+        os.makedirs(sample_dir, exist_ok=True)
 
     rows: list[dict[str, Any]] = []
     next_tick = time.time()
