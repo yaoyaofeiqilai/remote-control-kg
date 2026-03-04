@@ -1,0 +1,100 @@
+﻿{"t_ms":1772594554312,"i":0,"client_up":false,"bitrate_kbps":66355,"runtime_bitrate_scale":1,"capture_fps":0,"recv_fps":0,"ts_catchup":0,"playout_delay_ms":0,"playout_delay_ewma_ms":0,"decode_ms":0,"jitter_ms":0,"frames_backlog":0,"playback_rate":0,"audio_capture_running":false}
+{"t_ms":1772594555351,"i":1,"client_up":false,"bitrate_kbps":66355,"runtime_bitrate_scale":1,"capture_fps":0,"recv_fps":0,"ts_catchup":0,"playout_delay_ms":0,"playout_delay_ewma_ms":0,"decode_ms":0,"jitter_ms":0,"frames_backlog":0,"playback_rate":0,"audio_capture_running":null}
+{"t_ms":1772594556365,"i":2,"client_up":false,"bitrate_kbps":66355,"runtime_bitrate_scale":1,"capture_fps":0,"recv_fps":0,"ts_catchup":0,"playout_delay_ms":0,"playout_delay_ewma_ms":0,"decode_ms":0,"jitter_ms":0,"frames_backlog":0,"playback_rate":0,"audio_capture_running":null}
+{"t_ms":1772594557368,"i":3,"client_up":false,"bitrate_kbps":66355,"runtime_bitrate_scale":1,"capture_fps":0,"recv_fps":0,"ts_catchup":0,"playout_delay_ms":0,"playout_delay_ewma_ms":0,"decode_ms":0,"jitter_ms":0,"frames_backlog":0,"playback_rate":0,"audio_capture_running":null}
+{"t_ms":1772594558381,"i":4,"client_up":false,"bitrate_kbps":66355,"runtime_bitrate_scale":1,"capture_fps":0,"recv_fps":0,"ts_catchup":0,"playout_delay_ms":0,"playout_delay_ewma_ms":0,"decode_ms":0,"jitter_ms":0,"frames_backlog":0,"playback_rate":0,"audio_capture_running":null}
+{"t_ms":1772594559399,"i":5,"client_up":false,"bitrate_kbps":66355,"runtime_bitrate_scale":1,"capture_fps":0,"recv_fps":0,"ts_catchup":0,"playout_delay_ms":0,"playout_delay_ewma_ms":0,"decode_ms":0,"jitter_ms":0,"frames_backlog":0,"playback_rate":0,"audio_capture_running":null}
+{"t_ms":1772594560412,"i":6,"client_up":false,"bitrate_kbps":66355,"runtime_bitrate_scale":1,"capture_fps":0,"recv_fps":0,"ts_catchup":0,"playout_delay_ms":0,"playout_delay_ewma_ms":0,"decode_ms":0,"jitter_ms":0,"frames_backlog":0,"playback_rate":0,"audio_capture_running":null}
+{"t_ms":1772594561429,"i":7,"client_up":false,"bitrate_kbps":66355,"runtime_bitrate_scale":1,"capture_fps":0,"recv_fps":0,"ts_catchup":0,"playout_delay_ms":0,"playout_delay_ewma_ms":0,"decode_ms":0,"jitter_ms":0,"frames_backlog":0,"playback_rate":0,"audio_capture_running":null}
+{"t_ms":1772594562448,"i":8,"client_up":false,"bitrate_kbps":66355,"runtime_bitrate_scale":1,"capture_fps":0,"recv_fps":0,"ts_catchup":0,"playout_delay_ms":0,"playout_delay_ewma_ms":0,"decode_ms":0,"jitter_ms":0,"frames_backlog":0,"playback_rate":0,"audio_capture_running":null}
+{"t_ms":1772594563461,"i":9,"client_up":false,"bitrate_kbps":66355,"runtime_bitrate_scale":1,"capture_fps":0,"recv_fps":0,"ts_catchup":0,"playout_delay_ms":0,"playout_delay_ewma_ms":0,"decode_ms":0,"jitter_ms":0,"frames_backlog":0,"playback_rate":0,"audio_capture_running":null}
+{"t_ms":1772594564474,"i":10,"client_up":false,"bitrate_kbps":66355,"runtime_bitrate_scale":1,"capture_fps":0,"recv_fps":0,"ts_catchup":0,"playout_delay_ms":0,"playout_delay_ewma_ms":0,"decode_ms":0,"jitter_ms":0,"frames_backlog":0,"playback_rate":0,"audio_capture_running":false}
+{"t_ms":1772594565494,"i":11,"client_up":false,"bitrate_kbps":66355,"runtime_bitrate_scale":1,"capture_fps":0,"recv_fps":0,"ts_catchup":0,"playout_delay_ms":0,"playout_delay_ewma_ms":0,"decode_ms":0,"jitter_ms":0,"frames_backlog":0,"playback_rate":0,"audio_capture_running":null}
+{"t_ms":1772594566504,"i":12,"client_up":false,"bitrate_kbps":66355,"runtime_bitrate_scale":1,"capture_fps":0,"recv_fps":0,"ts_catchup":0,"playout_delay_ms":0,"playout_delay_ewma_ms":0,"decode_ms":0,"jitter_ms":0,"frames_backlog":0,"playback_rate":0,"audio_capture_running":null}
+{"t_ms":1772594567521,"i":13,"client_up":false,"bitrate_kbps":66355,"runtime_bitrate_scale":1,"capture_fps":0,"recv_fps":0,"ts_catchup":0,"playout_delay_ms":0,"playout_delay_ewma_ms":0,"decode_ms":0,"jitter_ms":0,"frames_backlog":0,"playback_rate":0,"audio_capture_running":null}
+{"t_ms":1772594568529,"i":14,"client_up":false,"bitrate_kbps":66355,"runtime_bitrate_scale":1,"capture_fps":0,"recv_fps":0,"ts_catchup":0,"playout_delay_ms":0,"playout_delay_ewma_ms":0,"decode_ms":0,"jitter_ms":0,"frames_backlog":0,"playback_rate":0,"audio_capture_running":null}
+{"t_ms":1772594569548,"i":15,"client_up":false,"bitrate_kbps":66355,"runtime_bitrate_scale":1,"capture_fps":45.8,"recv_fps":0,"ts_catchup":0,"playout_delay_ms":0,"playout_delay_ewma_ms":0,"decode_ms":0,"jitter_ms":0,"frames_backlog":0,"playback_rate":0,"audio_capture_running":null}
+{"t_ms":1772594570552,"i":16,"client_up":false,"bitrate_kbps":66355,"runtime_bitrate_scale":1,"capture_fps":45,"recv_fps":0,"ts_catchup":0,"playout_delay_ms":0,"playout_delay_ewma_ms":0,"decode_ms":0,"jitter_ms":0,"frames_backlog":0,"playback_rate":0,"audio_capture_running":null}
+{"t_ms":1772594571570,"i":17,"client_up":false,"bitrate_kbps":66355,"runtime_bitrate_scale":1,"capture_fps":45.1,"recv_fps":0,"ts_catchup":0,"playout_delay_ms":0,"playout_delay_ewma_ms":0,"decode_ms":0,"jitter_ms":0,"frames_backlog":0,"playback_rate":0,"audio_capture_running":null}
+{"t_ms":1772594572589,"i":18,"client_up":false,"bitrate_kbps":66355,"runtime_bitrate_scale":1,"capture_fps":44.9,"recv_fps":0,"ts_catchup":0,"playout_delay_ms":0,"playout_delay_ewma_ms":0,"decode_ms":0,"jitter_ms":0,"frames_backlog":0,"playback_rate":0,"audio_capture_running":null}
+{"t_ms":1772594573599,"i":19,"client_up":false,"bitrate_kbps":66355,"runtime_bitrate_scale":1,"capture_fps":45.1,"recv_fps":0,"ts_catchup":0,"playout_delay_ms":0,"playout_delay_ewma_ms":0,"decode_ms":0,"jitter_ms":0,"frames_backlog":0,"playback_rate":0,"audio_capture_running":null}
+{"t_ms":1772594574617,"i":20,"client_up":true,"bitrate_kbps":52420,"runtime_bitrate_scale":0.79,"capture_fps":38.9,"recv_fps":0,"ts_catchup":1,"playout_delay_ms":18.929516129032255,"playout_delay_ewma_ms":18.929516129032255,"decode_ms":26.743967741935485,"jitter_ms":9,"frames_backlog":0,"playback_rate":1,"audio_capture_running":true}
+{"t_ms":1772594575666,"i":21,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594577694,"i":22,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594579698,"i":23,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594581701,"i":24,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594583719,"i":25,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594585741,"i":26,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594587756,"i":27,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594589764,"i":28,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594591771,"i":29,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594593774,"i":30,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594595780,"i":31,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594597785,"i":32,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594599799,"i":33,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594601827,"i":34,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594603834,"i":35,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594605844,"i":36,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594607861,"i":37,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594609865,"i":38,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594611885,"i":39,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594613887,"i":40,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594615904,"i":41,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594617909,"i":42,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594619913,"i":43,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594621926,"i":44,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594623941,"i":45,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594625971,"i":46,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594627979,"i":47,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594629985,"i":48,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594632013,"i":49,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594634035,"i":50,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594636038,"i":51,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594638055,"i":52,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594640084,"i":53,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594642100,"i":54,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594644110,"i":55,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594646127,"i":56,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594648135,"i":57,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594650144,"i":58,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594652173,"i":59,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594654181,"i":60,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594656189,"i":61,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594658207,"i":62,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594660211,"i":63,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594662223,"i":64,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594664239,"i":65,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594666243,"i":66,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594668254,"i":67,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594670269,"i":68,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594672271,"i":69,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594674281,"i":70,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594676304,"i":71,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594678321,"i":72,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594680337,"i":73,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594682339,"i":74,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594684355,"i":75,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594686358,"i":76,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594688378,"i":77,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594690384,"i":78,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594692389,"i":79,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594694397,"i":80,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594696413,"i":81,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594698419,"i":82,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594700436,"i":83,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594702441,"i":84,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594704444,"i":85,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594706459,"i":86,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594708475,"i":87,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594710502,"i":88,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594712521,"i":89,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594714548,"i":90,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594716567,"i":91,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594718585,"i":92,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594720591,"i":93,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594722621,"i":94,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594724624,"i":95,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594726632,"i":96,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594728635,"i":97,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594730641,"i":98,"err":"poll_failed","msg":"The operation has timed out."}
+{"t_ms":1772594732657,"i":99,"err":"poll_failed","msg":"The operation has timed out."}

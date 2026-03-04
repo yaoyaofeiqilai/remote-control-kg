@@ -260,14 +260,16 @@ webrtc_min_bitrate_kbps = _env_int("RC_WEBRTC_MIN_BITRATE_KBPS", 300, 300, webrt
 webrtc_bitrate_scale = _env_float("RC_WEBRTC_BITRATE_SCALE", 2.0, 0.5, 3.0)
 webrtc_runtime_bitrate_enabled = _env_flag("RC_WEBRTC_RUNTIME_BITRATE_GUARD", True)
 webrtc_runtime_bitrate_min_scale = _env_float("RC_WEBRTC_RUNTIME_BITRATE_MIN_SCALE", 0.25, 0.10, 1.0)
+webrtc_runtime_bitrate_idle_scale = _env_float("RC_WEBRTC_RUNTIME_BITRATE_IDLE_SCALE", 0.80, 0.10, 1.0)
+webrtc_audio_transport_bitrate_cap_scale = _env_float("RC_WEBRTC_AUDIO_TRANSPORT_BITRATE_CAP_SCALE", 0.78, 0.30, 1.0)
 webrtc_audio_opus_maxaveragebitrate_bps = _env_int(
     "RC_WEBRTC_AUDIO_OPUS_MAXAVERAGEBITRATE_BPS",
-    510000,
+    200000,
     16000,
     510000,
 )
 webrtc_ts_catchup_enabled = _env_flag("RC_WEBRTC_TS_CATCHUP", True)
-webrtc_ts_catchup_min = _env_float("RC_WEBRTC_TS_CATCHUP_MIN", 0.45, 0.30, 1.0)
+webrtc_ts_catchup_min = _env_float("RC_WEBRTC_TS_CATCHUP_MIN", 0.50, 0.30, 1.0)
 webrtc_force_h264_only = _env_flag("RC_WEBRTC_FORCE_H264_ONLY", True)
 webrtc_h264_conservative_level = _env_flag("RC_WEBRTC_H264_CONSERVATIVE_LEVEL", False)
 webrtc_h264_profile_prefix = (os.getenv("RC_WEBRTC_H264_PROFILE_PREFIX", "42e0") or "42e0").strip().lower()
@@ -337,6 +339,9 @@ def _sync_webrtc_bitrate_target():
     base_kbps = int(webrtc_target_bitrate_kbps)
     if webrtc_bitrate_auto:
         base_kbps = _estimate_webrtc_bitrate_kbps()
+    if audio_transport_by_sid and any(bool(v) for v in audio_transport_by_sid.values()):
+        audio_cap = max(1200, int(round(float(_estimate_webrtc_bitrate_kbps()) * float(webrtc_audio_transport_bitrate_cap_scale))))
+        base_kbps = min(int(base_kbps), int(audio_cap))
     if webrtc_runtime_bitrate_enabled:
         guard_scale = max(float(webrtc_runtime_bitrate_min_scale), min(1.0, float(webrtc_runtime_bitrate_scale)))
         base_kbps = max(500, int(round(float(base_kbps) * guard_scale)))
@@ -576,7 +581,15 @@ def _webrtc_sender_ts_recompute_locked():
     global webrtc_sender_ts_catchup, webrtc_runtime_bitrate_scale
     if not webrtc_sender_ts_by_sid:
         webrtc_sender_ts_catchup = 1.0
-        webrtc_runtime_bitrate_scale = 1.0
+        if webrtc_runtime_bitrate_enabled:
+            webrtc_runtime_bitrate_scale = float(
+                max(
+                    float(webrtc_runtime_bitrate_min_scale),
+                    min(float(webrtc_runtime_bitrate_idle_scale), float(webrtc_runtime_bitrate_scale)),
+                )
+            )
+        else:
+            webrtc_runtime_bitrate_scale = 1.0
         return
     if webrtc_ts_catchup_enabled:
         factor = min(float(v.get("factor", 1.0) or 1.0) for v in webrtc_sender_ts_by_sid.values())
@@ -638,54 +651,88 @@ def _webrtc_sender_ts_update_from_client_stats(stats):
         hold_until = float(prev.get("hold_until", 0.0) or 0.0)
         aggressive_until = float(prev.get("aggressive_until", 0.0) or 0.0)
         bw_hold_until = float(prev.get("bw_hold_until", 0.0) or 0.0)
+        prev_delay = float(prev.get("delay_ms", delay) or delay)
+        delay_rise = max(0.0, float(delay) - float(prev_delay))
+        audio_tx_enabled = bool(audio_transport_by_sid.get(sid, audio_transport_default_enabled))
+
+        # Keep a tighter delay target when audio transport is enabled.
+        target_delay = 30.0 if audio_tx_enabled else 34.0
+        soft_delay = target_delay + 4.0
+        mid_delay = target_delay + 14.0
+        high_delay = target_delay + 28.0
+        critical_delay = target_delay + 55.0
 
         if webrtc_ts_catchup_enabled:
             # Base target around a 24-30ms objective.
-            if delay <= 22.0:
+            if delay <= (target_delay - 6.0):
                 target = 1.0
-            elif delay <= 35.0:
-                target = 1.0 - (((delay - 22.0) / 13.0) * 0.06)
-            elif delay <= 60.0:
-                target = 0.94 - (((delay - 35.0) / 25.0) * 0.12)
-            elif delay <= 100.0:
-                target = 0.82 - (((delay - 60.0) / 40.0) * 0.20)
+            elif delay <= target_delay:
+                target = 1.0 - (((delay - (target_delay - 6.0)) / 6.0) * 0.05)
+            elif delay <= soft_delay:
+                target = 0.95 - (((delay - target_delay) / 4.0) * 0.07)
+            elif delay <= mid_delay:
+                target = 0.88 - (((delay - soft_delay) / 10.0) * 0.14)
+            elif delay <= high_delay:
+                target = 0.74 - (((delay - mid_delay) / 14.0) * 0.16)
             else:
-                target = 0.62 - min(0.22, ((delay - 100.0) / 220.0) * 0.22)
+                target = 0.58 - min(0.14, ((delay - high_delay) / 200.0) * 0.14)
 
             if backlog >= 2.0:
                 target = min(target, 0.68)
             elif backlog >= 1.0:
                 target = min(target, 0.76)
-            if delay >= 55.0:
-                target = min(target, 0.72)
-            elif delay >= 45.0:
-                target = min(target, 0.80)
-            elif delay >= 35.0:
-                target = min(target, 0.88)
-
-            if delay >= 220.0:
-                hold_until = max(hold_until, now_ts + 10.0)
-                target = min(target, 0.44)
-            elif delay >= 170.0:
+            elif backlog >= 0.5:
+                target = min(target, 0.82)
+            if playback_rate >= 1.24:
+                target = max(target, 0.72)
+            elif playback_rate >= 1.18:
+                target = max(target, 0.66)
+            elif playback_rate >= 1.12:
+                target = max(target, 0.60)
+            if jitter_ms >= 12.0:
+                target = min(target, 0.70)
+            elif jitter_ms >= 8.0:
+                target = min(target, 0.78)
+            if delay_rise >= 20.0:
                 hold_until = max(hold_until, now_ts + 8.0)
-                target = min(target, 0.52)
-            elif delay >= 125.0:
-                hold_until = max(hold_until, now_ts + 6.0)
+                bw_hold_until = max(bw_hold_until, now_ts + 12.0)
                 target = min(target, 0.60)
+            elif delay_rise >= 12.0:
+                hold_until = max(hold_until, now_ts + 5.0)
+                bw_hold_until = max(bw_hold_until, now_ts + 8.0)
+                target = min(target, 0.68)
 
-            if delay >= 180.0:
-                aggressive_until = max(aggressive_until, now_ts + 45.0)
+            if delay >= critical_delay:
+                hold_until = max(hold_until, now_ts + 10.0)
+                target = min(target, 0.50)
+            elif delay >= high_delay:
+                hold_until = max(hold_until, now_ts + 7.0)
+                target = min(target, 0.60)
+            elif delay >= mid_delay:
+                hold_until = max(hold_until, now_ts + 5.0)
+                target = min(target, 0.68)
+
+            if delay >= (critical_delay + 20.0):
+                aggressive_until = max(aggressive_until, now_ts + 40.0)
 
             if now_ts < hold_until:
-                target = min(target, 0.66)
+                target = min(target, 0.70)
             if now_ts < aggressive_until:
-                target = min(target, 0.52)
+                target = min(target, 0.56)
 
             # Apply tightening quickly, release very slowly to avoid delay rebound.
             if target < prev_factor:
-                factor = (prev_factor * 0.30) + (float(target) * 0.70)
+                factor = (prev_factor * 0.22) + (float(target) * 0.78)
             else:
-                factor = (prev_factor * 0.95) + (float(target) * 0.05)
+                stable_recovery = (
+                    delay <= (target_delay - 4.0)
+                    and playback_rate <= 1.01
+                    and jitter_ms <= 6.0
+                    and backlog < 0.4
+                    and delay_rise < 3.0
+                )
+                up_alpha = 0.08 if stable_recovery and now_ts >= hold_until else 0.02
+                factor = (prev_factor * (1.0 - up_alpha)) + (float(target) * up_alpha)
             factor = float(max(float(webrtc_ts_catchup_min), min(1.0, factor)))
         else:
             factor = 1.0
@@ -693,34 +740,56 @@ def _webrtc_sender_ts_update_from_client_stats(stats):
         # Runtime bitrate guard: quickly back off when delay/jitter rises, recover slowly.
         if not webrtc_runtime_bitrate_enabled:
             bw_target = 1.0
-        elif delay >= 220.0 or jitter_ms >= 24.0 or playback_rate >= 1.32 or backlog >= 1.5:
-            bw_target = 0.46
+        elif delay >= (critical_delay + 30.0) or jitter_ms >= 20.0 or playback_rate >= 1.28 or backlog >= 1.4:
+            bw_target = 0.36
             bw_hold_until = max(bw_hold_until, now_ts + 30.0)
-        elif delay >= 170.0 or jitter_ms >= 18.0 or playback_rate >= 1.25 or backlog >= 1.0:
-            bw_target = 0.54
+        elif delay >= critical_delay or jitter_ms >= 14.0 or playback_rate >= 1.20 or backlog >= 1.0:
+            bw_target = 0.46
             bw_hold_until = max(bw_hold_until, now_ts + 24.0)
-        elif delay >= 130.0 or jitter_ms >= 14.0 or playback_rate >= 1.18:
-            bw_target = 0.62
-            bw_hold_until = max(bw_hold_until, now_ts + 18.0)
-        elif delay >= 95.0 or playback_rate >= 1.12:
-            bw_target = 0.72
+        elif delay >= high_delay or jitter_ms >= 10.0 or playback_rate >= 1.12 or backlog >= 0.7:
+            bw_target = 0.56
+            bw_hold_until = max(bw_hold_until, now_ts + 16.0)
+        elif delay >= mid_delay or jitter_ms >= 8.0 or playback_rate >= 1.07 or backlog >= 0.4:
+            bw_target = 0.66
             bw_hold_until = max(bw_hold_until, now_ts + 12.0)
-        elif delay >= 70.0 or jitter_ms >= 10.0:
-            bw_target = 0.82
+        elif delay >= soft_delay or playback_rate >= 1.04 or delay_rise >= 8.0:
+            bw_target = 0.78
             bw_hold_until = max(bw_hold_until, now_ts + 8.0)
+        elif delay >= target_delay or playback_rate >= 1.02:
+            bw_target = 0.88
         else:
             bw_target = 1.0
 
+        if delay_rise >= 20.0:
+            bw_target = min(bw_target, 0.50)
+            bw_hold_until = max(bw_hold_until, now_ts + 16.0)
+            aggressive_until = max(aggressive_until, now_ts + 20.0)
+        elif delay_rise >= 12.0:
+            bw_target = min(bw_target, 0.60)
+            bw_hold_until = max(bw_hold_until, now_ts + 10.0)
+
         if now_ts < bw_hold_until:
-            bw_target = min(bw_target, 0.74)
+            bw_target = min(bw_target, 0.78 if delay <= (target_delay + 6.0) else 0.72)
         if now_ts < aggressive_until:
             bw_target = min(bw_target, 0.60)
         bw_target = float(max(float(webrtc_runtime_bitrate_min_scale), min(1.0, bw_target)))
 
         if bw_target < prev_bw_scale:
-            bw_scale = (prev_bw_scale * 0.35) + (bw_target * 0.65)
+            bw_scale = (prev_bw_scale * 0.25) + (bw_target * 0.75)
         else:
-            up_alpha = 0.03 if now_ts < bw_hold_until else 0.07
+            stable_bw_recovery = (
+                delay <= (target_delay - 3.0)
+                and playback_rate <= 1.01
+                and jitter_ms <= 6.0
+                and backlog < 0.4
+                and delay_rise < 3.0
+            )
+            if stable_bw_recovery and now_ts >= bw_hold_until:
+                up_alpha = 0.06
+            elif now_ts < bw_hold_until or delay > target_delay:
+                up_alpha = 0.015
+            else:
+                up_alpha = 0.03
             bw_scale = (prev_bw_scale * (1.0 - up_alpha)) + (bw_target * up_alpha)
         bw_scale = float(max(float(webrtc_runtime_bitrate_min_scale), min(1.0, bw_scale)))
 
@@ -728,6 +797,7 @@ def _webrtc_sender_ts_update_from_client_stats(stats):
             "factor": float(factor),
             "bw_scale": float(bw_scale),
             "delay_ms": float(delay),
+            "delay_rise_ms": float(delay_rise),
             "hold_until": float(hold_until),
             "bw_hold_until": float(bw_hold_until),
             "aggressive_until": float(aggressive_until),
@@ -737,17 +807,17 @@ def _webrtc_sender_ts_update_from_client_stats(stats):
         guard = dict(webrtc_high_delay_guard_state.get(sid, {}) or {})
         high_since = float(guard.get("high_since", 0.0) or 0.0)
         last_reset = float(guard.get("last_reset", 0.0) or 0.0)
-        if delay >= 210.0 or (delay >= 175.0 and playback_rate >= 1.20):
+        if delay >= 260.0 or (delay >= 220.0 and playback_rate >= 1.24):
             if high_since <= 0.0:
                 high_since = now_ts
-        elif delay <= 135.0:
+        elif delay <= 155.0:
             high_since = 0.0
 
         # Persistent high playout delay guard: reset peer occasionally to exit stuck buffering state.
         if (
             high_since > 0.0
-            and (now_ts - high_since) >= 5.0
-            and (now_ts - last_reset) >= 35.0
+            and (now_ts - high_since) >= 8.0
+            and (now_ts - last_reset) >= 55.0
         ):
             should_reset_peer = True
             high_since = 0.0
@@ -1845,7 +1915,8 @@ if WEBRTC_AVAILABLE:
             self._stale_count = 0
             self._clock_rate = 90000
             self._time_base = Fraction(1, self._clock_rate)
-            self._timestamp = 0
+            self._media_timestamp = 0
+            self._pacer_frame_index = 0
             self._started_at_perf = None
             self._recv_window_start_perf = None
             self._recv_counter = 0
@@ -1859,19 +1930,22 @@ if WEBRTC_AVAILABLE:
             # Keep sender cadence on requested FPS; frame pump always exposes latest frame.
             target_fps = requested_fps
             ts_catchup = _webrtc_sender_ts_get_factor()
-            ticks_per_frame = max(1, int((self._clock_rate / target_fps) * ts_catchup))
+            base_ticks_per_frame = max(1, int(self._clock_rate / target_fps))
+            media_ticks_per_frame = max(1, int(base_ticks_per_frame * ts_catchup))
             wait_s = 0.0
             now_perf = time.perf_counter()
             if self._started_at_perf is None:
                 self._started_at_perf = now_perf
-                self._timestamp = 0
+                self._media_timestamp = 0
+                self._pacer_frame_index = 0
             else:
-                self._timestamp += ticks_per_frame
-                target_time = self._started_at_perf + (self._timestamp / float(self._clock_rate))
+                self._pacer_frame_index += 1
+                self._media_timestamp += media_ticks_per_frame
+                target_time = self._started_at_perf + (self._pacer_frame_index / float(target_fps))
                 # Drop scheduling debt if loop falls too far behind.
                 if target_time < (now_perf - 0.25):
-                    self._started_at_perf = now_perf - (self._timestamp / float(self._clock_rate))
-                    target_time = self._started_at_perf + (self._timestamp / float(self._clock_rate))
+                    self._started_at_perf = now_perf - (self._pacer_frame_index / float(target_fps))
+                    target_time = self._started_at_perf + (self._pacer_frame_index / float(target_fps))
                 wait_s = target_time - now_perf
             if wait_s > 0:
                 await asyncio.sleep(wait_s)
@@ -1909,7 +1983,7 @@ if WEBRTC_AVAILABLE:
                 frame, pixel_format = latest
                 vf = VideoFrame.from_ndarray(frame, format=(pixel_format or "rgb24"))
                 self._last_vf = vf
-            vf.pts = self._timestamp
+            vf.pts = self._media_timestamp
             vf.time_base = self._time_base
 
             now_perf = time.perf_counter()
@@ -1979,6 +2053,8 @@ def server_info():
         'webrtc_runtime_bitrate_enabled': bool(webrtc_runtime_bitrate_enabled),
         'webrtc_runtime_bitrate_scale': float(webrtc_runtime_bitrate_scale),
         'webrtc_runtime_bitrate_min_scale': float(webrtc_runtime_bitrate_min_scale),
+        'webrtc_runtime_bitrate_idle_scale': float(webrtc_runtime_bitrate_idle_scale),
+        'webrtc_audio_transport_bitrate_cap_scale': float(webrtc_audio_transport_bitrate_cap_scale),
         'webrtc_audio_opus_maxaveragebitrate_bps': int(webrtc_audio_opus_maxaveragebitrate_bps),
         'webrtc_force_h264_only': bool(webrtc_force_h264_only),
         'webrtc_video_pt_count': int(last_video_codec_policy.get('video_pt_count', 0) or 0),

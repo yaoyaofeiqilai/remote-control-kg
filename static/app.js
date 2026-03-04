@@ -22,7 +22,7 @@ const CONFIG = {
 
 
 const DEBUG_LOG_ENABLED = false;
-const CLIENT_BUILD = '20260304_audio_fix3';
+const CLIENT_BUILD = '20260304_audio_fix5';
 
 function debugLog(...args) {
     if (DEBUG_LOG_ENABLED) {
@@ -360,14 +360,14 @@ function applyVideoCatchupRate() {
         if (delayMs >= 300) nextRate = 1.75;
         else if (delayMs >= 260) nextRate = 1.60;
         else if (delayMs >= 200) nextRate = 1.45;
-        else if (delayMs >= 150) nextRate = 1.30;
-        else if (delayMs >= 110) nextRate = 1.22;
-        else if (delayMs >= 80) nextRate = 1.16;
-        else if (delayMs >= 60) nextRate = 1.11;
-        else if (delayMs >= 45) nextRate = 1.08;
-        else if (delayMs >= 36) nextRate = 1.05;
-        else if (delayMs >= 30) nextRate = 1.03;
-        else if (delayMs >= 26) nextRate = 1.02;
+        else if (delayMs >= 150) nextRate = 1.36;
+        else if (delayMs >= 110) nextRate = 1.28;
+        else if (delayMs >= 80) nextRate = 1.21;
+        else if (delayMs >= 60) nextRate = 1.15;
+        else if (delayMs >= 45) nextRate = 1.10;
+        else if (delayMs >= 36) nextRate = 1.07;
+        else if (delayMs >= 30) nextRate = 1.05;
+        else if (delayMs >= 26) nextRate = 1.03;
     }
     if (!Number.isFinite(nextRate) || nextRate <= 0) nextRate = 1.0;
     const prevRate = Number(state.webrtc.playbackRate || 1.0);
@@ -434,9 +434,9 @@ function checkWebRTCLatencyDrift() {
 
     const baseline = Number(state.webrtc.delayBaselineMs || delayMs);
     const driftMs = Math.max(0, delayMs - baseline);
-    const severe = delayMs >= 220 || driftMs >= 120;
-    const high = delayMs >= 150 || driftMs >= 80;
-    const mid = delayMs >= 100 || driftMs >= 50;
+    const severe = delayMs >= 260 || driftMs >= 150;
+    const high = delayMs >= 190 || driftMs >= 110;
+    const mid = delayMs >= 130 || driftMs >= 70;
     const pr = Number(state.webrtc.playbackRate || 1.0);
 
     if (severe) {
@@ -449,13 +449,13 @@ function checkWebRTCLatencyDrift() {
         state.webrtc.latencyBadTicks = Math.max(0, state.webrtc.latencyBadTicks - 1);
     }
 
-    if (state.webrtc.latencyBadTicks >= 3) {
-        if ((now - Number(state.webrtc.lastSoftFlushAt || 0)) >= 10000) {
+    if (state.webrtc.latencyBadTicks >= 5 && delayMs >= 120) {
+        if ((now - Number(state.webrtc.lastSoftFlushAt || 0)) >= 12000) {
             softFlushVideoPlayback('latency_drift');
         }
     }
-    if (state.webrtc.latencyBadTicks >= 6) {
-        if ((now - Number(state.webrtc.lastLatencyRestartAt || 0)) >= 20000) {
+    if (state.webrtc.latencyBadTicks >= 11 && delayMs >= 180) {
+        if ((now - Number(state.webrtc.lastLatencyRestartAt || 0)) >= 30000) {
             state.webrtc.lastLatencyRestartAt = now;
             state.webrtc.latencyBadTicks = 0;
             scheduleWebRTCRestart('latency_drift_restart', 800);
