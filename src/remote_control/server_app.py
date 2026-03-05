@@ -254,14 +254,14 @@ webrtc_max_height = _env_int("RC_WEBRTC_MAX_HEIGHT", int(_screen_size.height), 2
 capture_all_monitors = _env_flag("RC_CAPTURE_ALL_MONITORS", False)
 webrtc_bitrate_auto = _env_flag("RC_WEBRTC_AUTO_BITRATE", True)
 webrtc_max_bitrate_kbps = _env_int("RC_WEBRTC_MAX_BITRATE_KBPS", 80000, 1000, 200000)
-webrtc_target_bitrate_kbps = _env_int("RC_WEBRTC_BITRATE_KBPS", 24000, 500, webrtc_max_bitrate_kbps)
-webrtc_start_bitrate_kbps = _env_int("RC_WEBRTC_START_BITRATE_KBPS", 24000, 500, webrtc_max_bitrate_kbps)
-webrtc_min_bitrate_kbps = _env_int("RC_WEBRTC_MIN_BITRATE_KBPS", 300, 300, webrtc_max_bitrate_kbps)
-webrtc_bitrate_scale = _env_float("RC_WEBRTC_BITRATE_SCALE", 2.0, 0.5, 3.0)
+webrtc_target_bitrate_kbps = _env_int("RC_WEBRTC_BITRATE_KBPS", 30000, 500, webrtc_max_bitrate_kbps)
+webrtc_start_bitrate_kbps = _env_int("RC_WEBRTC_START_BITRATE_KBPS", 32000, 500, webrtc_max_bitrate_kbps)
+webrtc_min_bitrate_kbps = _env_int("RC_WEBRTC_MIN_BITRATE_KBPS", 2000, 300, webrtc_max_bitrate_kbps)
+webrtc_bitrate_scale = _env_float("RC_WEBRTC_BITRATE_SCALE", 2.2, 0.5, 3.0)
 webrtc_runtime_bitrate_enabled = _env_flag("RC_WEBRTC_RUNTIME_BITRATE_GUARD", True)
-webrtc_runtime_bitrate_min_scale = _env_float("RC_WEBRTC_RUNTIME_BITRATE_MIN_SCALE", 0.25, 0.10, 1.0)
+webrtc_runtime_bitrate_min_scale = _env_float("RC_WEBRTC_RUNTIME_BITRATE_MIN_SCALE", 0.45, 0.10, 1.0)
 webrtc_runtime_bitrate_idle_scale = _env_float("RC_WEBRTC_RUNTIME_BITRATE_IDLE_SCALE", 0.80, 0.10, 1.0)
-webrtc_audio_transport_bitrate_cap_scale = _env_float("RC_WEBRTC_AUDIO_TRANSPORT_BITRATE_CAP_SCALE", 0.78, 0.30, 1.0)
+webrtc_audio_transport_bitrate_cap_scale = _env_float("RC_WEBRTC_AUDIO_TRANSPORT_BITRATE_CAP_SCALE", 0.90, 0.30, 1.0)
 webrtc_audio_opus_maxaveragebitrate_bps = _env_int(
     "RC_WEBRTC_AUDIO_OPUS_MAXAVERAGEBITRATE_BPS",
     200000,
@@ -354,7 +354,35 @@ def _effective_webrtc_min_bitrate_kbps(target_kbps: int) -> int:
     """Resolve effective min bitrate hint from configured policy."""
     target_kbps = max(500, int(target_kbps))
     configured = max(300, int(webrtc_min_bitrate_kbps))
-    return max(300, min(target_kbps, configured))
+    dynamic_floor = configured
+    try:
+        estimated_kbps = int(_estimate_webrtc_bitrate_kbps())
+    except Exception:
+        estimated_kbps = target_kbps
+
+    scale_now = max(0.25, min(1.0, float(webrtc_scale)))
+    fps_now = max(15, min(int(webrtc_fps_max), int(webrtc_target_fps)))
+    quality_now = max(10, min(95, int(quality)))
+    try:
+        size = _get_screen_size()
+        screen_w = int(size.width)
+        screen_h = int(size.height)
+    except Exception:
+        screen_w = int(getattr(_screen_size, "width", 1920))
+        screen_h = int(getattr(_screen_size, "height", 1080))
+    target_pixels = max(320, int(screen_w * scale_now)) * max(240, int(screen_h * scale_now))
+
+    if quality_now >= 88 and scale_now >= 0.85:
+        dynamic_floor = max(dynamic_floor, int(round(float(estimated_kbps) * 0.20)))
+    if quality_now >= 92 and scale_now >= 0.95 and fps_now >= 45:
+        dynamic_floor = max(dynamic_floor, int(round(float(estimated_kbps) * 0.26)))
+    if quality_now >= 90 and fps_now >= 45:
+        if target_pixels >= (2560 * 1440):
+            dynamic_floor = max(dynamic_floor, 9000)
+        elif target_pixels >= (1920 * 1080):
+            dynamic_floor = max(dynamic_floor, 6000)
+
+    return max(300, min(target_kbps, int(dynamic_floor)))
 
 
 _sync_webrtc_bitrate_target()

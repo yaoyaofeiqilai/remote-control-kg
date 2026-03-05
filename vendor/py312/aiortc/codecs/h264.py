@@ -37,7 +37,7 @@ def _encoder_order() -> List[str]:
 DEFAULT_BITRATE = 12000000  # 12 Mbps
 MIN_BITRATE = 2000000  # 2 Mbps
 MAX_BITRATE = 120000000  # 120 Mbps
-HIGHRES_MIN_BITRATE = int(os.getenv("RC_WEBRTC_HIGHRES_MIN_BITRATE_BPS", "12000000"))
+HIGHRES_MIN_BITRATE = int(os.getenv("RC_WEBRTC_HIGHRES_MIN_BITRATE_BPS", "16000000"))
 HIGHRES_MIN_PIXELS = int(os.getenv("RC_WEBRTC_HIGHRES_MIN_PIXELS", "3000000"))
 DEFAULT_GOP = max(15, int(os.getenv("RC_WEBRTC_H264_GOP", "60") or "60"))
 
@@ -168,9 +168,12 @@ def create_encoder_context(
             {
                 "g": str(gop),
                 "bf": "0",
-                "preset": "p2",
-                "tune": "ull",
+                "preset": "p4",
+                "tune": "ll",
                 "rc": "cbr",
+                "spatial_aq": "1",
+                "temporal_aq": "1",
+                "aq-strength": "8",
                 "zerolatency": "1",
                 "repeat_headers": "1",
                 "aud": "1",
@@ -179,6 +182,18 @@ def create_encoder_context(
                 "g": str(gop),
                 "bf": "0",
                 "preset": "p3",
+                "tune": "ll",
+                "rc": "cbr",
+                "spatial_aq": "1",
+                "temporal_aq": "1",
+                "zerolatency": "1",
+                "repeat_headers": "1",
+                "aud": "1",
+            },
+            {
+                "g": str(gop),
+                "bf": "0",
+                "preset": "p2",
                 "tune": "ull",
                 "rc": "cbr",
                 "zerolatency": "1",
