@@ -10,12 +10,14 @@ import ctypes
 import json
 import os
 import queue
+import re
 import sys
 import threading
 import time
 from collections import deque
 from datetime import datetime
 from fractions import Fraction
+from functools import wraps
 
 import mss
 import numpy as np
@@ -97,6 +99,8 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 VENDOR_DIR = os.path.join(PROJECT_ROOT, "vendor", "py312")
 if os.path.isdir(VENDOR_DIR) and VENDOR_DIR not in sys.path:
     sys.path.insert(0, VENDOR_DIR)
+ARTIFACTS_DIR = os.path.join(PROJECT_ROOT, os.getenv("RC_ARTIFACTS_DIR", "artifacts"))
+SECURITY_SHUTDOWN_FLAG_PATH = os.path.join(ARTIFACTS_DIR, "security_shutdown.flag")
 
 from flask import Flask, render_template, request
 from flask_cors import CORS
@@ -237,6 +241,16 @@ def _get_screen_size(refresh_interval_s: float = 1.0):
 
 # Cleaned garbled comment.
 connected_clients = 0
+PAIR_SECURITY_EXIT_CODE = 23
+pair_security_enabled = _env_flag("RC_PAIR_ENABLED", True)
+pair_code = (os.getenv("RC_PAIR_CODE", "041013") or "").strip()
+if not re.fullmatch(r"\d{6}", pair_code):
+    print("[Security] RC_PAIR_CODE invalid, fallback to default 041013")
+    pair_code = "041013"
+pair_max_attempts = _env_int("RC_PAIR_MAX_ATTEMPTS", 3, 1, 10)
+pair_state_lock = threading.Lock()
+pair_authenticated_sids = set()
+pair_failed_attempts_global = 0
 quality = _env_int("RC_QUALITY", 95, 10, 95)  # Cleaned garbled comment.
 fps = 45  # Cleaned garbled comment.
 
@@ -2053,6 +2067,123 @@ if WEBRTC_AVAILABLE:
             return vf
 
 
+def _pair_failed_attempts_snapshot() -> int:
+    with pair_state_lock:
+        return int(pair_failed_attempts_global)
+
+
+def _pair_remaining_attempts_snapshot() -> int:
+    return max(0, int(pair_max_attempts) - int(_pair_failed_attempts_snapshot()))
+
+
+def _pair_is_authenticated_sid(sid: str) -> bool:
+    if not pair_security_enabled:
+        return True
+    sid = str(sid or "")
+    with pair_state_lock:
+        return sid in pair_authenticated_sids
+
+
+def _pair_mark_authenticated_sid(sid: str, reset_failures: bool = False) -> int:
+    global pair_failed_attempts_global
+    sid = str(sid or "")
+    with pair_state_lock:
+        pair_authenticated_sids.add(sid)
+        if reset_failures:
+            pair_failed_attempts_global = 0
+        return max(0, int(pair_max_attempts) - int(pair_failed_attempts_global))
+
+
+def _pair_register_failure_sid(sid: str):
+    global pair_failed_attempts_global
+    sid = str(sid or "")
+    with pair_state_lock:
+        pair_authenticated_sids.discard(sid)
+        pair_failed_attempts_global = int(pair_failed_attempts_global) + 1
+        attempts = int(pair_failed_attempts_global)
+        remaining = max(0, int(pair_max_attempts) - attempts)
+        return attempts, remaining
+
+
+def _emit_auth_required(reason: str = "pair_required"):
+    emit('auth_required', {
+        'required': bool(pair_security_enabled),
+        'max_attempts': int(pair_max_attempts),
+        'remaining_attempts': int(_pair_remaining_attempts_snapshot()),
+        'reason': str(reason or "pair_required"),
+    })
+
+
+def _emit_connected_payload_for_sid(sid: str):
+    sid = str(sid or "")
+    system_audio_state = _system_audio_get_state()
+    emit('connected', {
+        'status': 'ok',
+        'screen_width': _get_screen_size().width,
+        'screen_height': _get_screen_size().height,
+        'audio_feature_enabled': bool(audio_enabled),
+        'audio_transport_enabled': bool(audio_transport_by_sid.get(sid, False)),
+        'system_mute_available': bool(system_audio_state.get("available", False)),
+        'system_muted': bool(system_audio_state.get("muted", False)),
+    }, to=sid)
+    emit('xinput_status', {'available': bool(XINPUT_AVAILABLE)}, to=sid)
+    emit('audio_transport_updated', {
+        'enabled': bool(audio_transport_by_sid.get(sid, False)),
+        'needs_restart': False,
+    }, to=sid)
+    emit('system_mute_updated', system_audio_state, to=sid)
+
+
+def _trigger_security_shutdown(reason: str):
+    payload = {
+        'reason': str(reason or "pair_failed_limit"),
+        'attempts': int(_pair_failed_attempts_snapshot()),
+        'max_attempts': int(pair_max_attempts),
+    }
+    print(f"[Security] shutdown triggered: {payload}")
+    try:
+        os.makedirs(ARTIFACTS_DIR, exist_ok=True)
+        with open(SECURITY_SHUTDOWN_FLAG_PATH, "w", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "ts": time.time(),
+                "reason": payload.get("reason", ""),
+                "attempts": int(payload.get("attempts", 0) or 0),
+                "max_attempts": int(payload.get("max_attempts", 0) or 0),
+                "exit_code": int(PAIR_SECURITY_EXIT_CODE),
+            }, ensure_ascii=True))
+    except Exception as e:
+        print(f"[Security] failed to write shutdown flag: {e}")
+    try:
+        socketio.emit('security_shutdown', payload)
+    except Exception:
+        pass
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+    os._exit(PAIR_SECURITY_EXIT_CODE)
+
+
+def _require_paired_sid(event_name: str = "") -> bool:
+    sid = str(request.sid or "")
+    if _pair_is_authenticated_sid(sid):
+        return True
+    print(f"[Security] blocked unauthenticated event sid={sid}, event={event_name}")
+    _emit_auth_required(reason="pair_required")
+    return False
+
+
+def _paired_required(handler):
+    @wraps(handler)
+    def _wrapped(*args, **kwargs):
+        if not _require_paired_sid(handler.__name__):
+            return
+        return handler(*args, **kwargs)
+
+    return _wrapped
+
+
 @app.route('/')
 def index():
     """Render control page."""
@@ -2113,6 +2244,10 @@ def server_info():
         'video_hw_encoders_available': list(video_encoder_status.get('hardware_available', [])),
         'audio_enabled': bool(audio_enabled),
         'audio_transport_default_enabled': bool(audio_transport_default_enabled),
+        'pair_enabled': bool(pair_security_enabled),
+        'pair_max_attempts': int(pair_max_attempts),
+        'pair_remaining_attempts': int(_pair_remaining_attempts_snapshot()),
+        'pair_failed_attempts': int(_pair_failed_attempts_snapshot()),
     }
 
 
@@ -2211,23 +2346,50 @@ def handle_connect():
     connected_clients += 1
     sid = request.sid
     audio_transport_by_sid.setdefault(sid, bool(audio_transport_default_enabled))
-    system_audio_state = _system_audio_get_state()
-    print(f"[Socket] client connected, connected_clients={connected_clients}")
-    emit('connected', {
-        'status': 'ok',
-        'screen_width': _get_screen_size().width,
-        'screen_height': _get_screen_size().height,
-        'audio_feature_enabled': bool(audio_enabled),
-        'audio_transport_enabled': bool(audio_transport_by_sid.get(sid, False)),
-        'system_mute_available': bool(system_audio_state.get("available", False)),
-        'system_muted': bool(system_audio_state.get("muted", False)),
+    print(f"[Socket] client connected sid={sid}, connected_clients={connected_clients}")
+    if pair_security_enabled:
+        with pair_state_lock:
+            pair_authenticated_sids.discard(str(sid or ""))
+        _emit_auth_required(reason="pair_required")
+        return
+
+    _pair_mark_authenticated_sid(sid, reset_failures=False)
+    _emit_connected_payload_for_sid(sid)
+
+
+@socketio.on('pair_request')
+def handle_pair_request(data):
+    sid = str(request.sid or "")
+    if not pair_security_enabled:
+        _pair_mark_authenticated_sid(sid, reset_failures=True)
+        emit('pair_result', {
+            'ok': True,
+            'remaining_attempts': int(pair_max_attempts),
+            'max_attempts': int(pair_max_attempts),
+        })
+        _emit_connected_payload_for_sid(sid)
+        return
+
+    code = str((data or {}).get('code', '') or '').strip()
+    if code == pair_code:
+        _pair_mark_authenticated_sid(sid, reset_failures=True)
+        emit('pair_result', {
+            'ok': True,
+            'remaining_attempts': int(pair_max_attempts),
+            'max_attempts': int(pair_max_attempts),
+        })
+        _emit_connected_payload_for_sid(sid)
+        return
+
+    attempts, remaining = _pair_register_failure_sid(sid)
+    emit('pair_result', {
+        'ok': False,
+        'reason': 'invalid_code',
+        'remaining_attempts': int(remaining),
+        'max_attempts': int(pair_max_attempts),
     })
-    emit('xinput_status', {'available': bool(XINPUT_AVAILABLE)})
-    emit('audio_transport_updated', {
-        'enabled': bool(audio_transport_by_sid.get(sid, False)),
-        'needs_restart': False,
-    })
-    emit('system_mute_updated', system_audio_state)
+    if attempts >= int(pair_max_attempts):
+        _trigger_security_shutdown("pair_failed_limit")
 
 
 @socketio.on('disconnect')
@@ -2238,6 +2400,8 @@ def handle_disconnect():
     print(f"[Socket] client disconnected, connected_clients={connected_clients}")
 
     sid = request.sid
+    with pair_state_lock:
+        pair_authenticated_sids.discard(str(sid or ""))
     audio_transport_by_sid.pop(sid, None)
     _webrtc_sender_ts_remove_sid(str(sid or ""))
     try:
@@ -2836,6 +3000,7 @@ async def _webrtc_handle_offer(sid: str, offer_sdp: str, offer_type: str):
 
 
 @socketio.on('webrtc_offer')
+@_paired_required
 def handle_webrtc_offer(data):
     if not ensure_webrtc_runtime():
         emit('webrtc_error', {'error': 'webrtc_not_available'})
@@ -2861,6 +3026,7 @@ def handle_webrtc_offer(data):
 
 
 @socketio.on('audio_client_stats')
+@_paired_required
 def handle_audio_client_stats(data):
     if not isinstance(data, dict):
         return
@@ -2879,6 +3045,7 @@ def handle_audio_client_stats(data):
 
 
 @socketio.on('set_audio_transport')
+@_paired_required
 def handle_set_audio_transport(data):
     sid = request.sid
     enabled = bool((data or {}).get('enabled', False))
@@ -2890,6 +3057,7 @@ def handle_set_audio_transport(data):
 
 
 @socketio.on('get_audio_transport')
+@_paired_required
 def handle_get_audio_transport(data=None):
     sid = request.sid
     emit('audio_transport_updated', {
@@ -2899,6 +3067,7 @@ def handle_get_audio_transport(data=None):
 
 
 @socketio.on('set_system_mute')
+@_paired_required
 def handle_set_system_mute(data):
     muted = bool((data or {}).get('muted', False))
     state = _system_audio_set_mute(bool(muted))
@@ -2906,12 +3075,14 @@ def handle_set_system_mute(data):
 
 
 @socketio.on('get_system_mute')
+@_paired_required
 def handle_get_system_mute(data=None):
     state = _system_audio_get_state()
     emit('system_mute_updated', state)
 
 
 @socketio.on('video_client_stats')
+@_paired_required
 def handle_video_client_stats(data):
     if not isinstance(data, dict):
         return
@@ -2942,6 +3113,7 @@ def handle_video_client_stats(data):
 
 
 @socketio.on('set_mode')
+@_paired_required
 def handle_set_mode(data):
     """Switch client control mode."""
     global game_mode
@@ -2958,6 +3130,7 @@ def handle_set_mode(data):
 
 
 @socketio.on('mouse_move')
+@_paired_required
 def handle_mouse_move(data):
     """Cleaned garbled docstring."""
     try:
@@ -2984,6 +3157,7 @@ def handle_mouse_move(data):
 
 
 @socketio.on('mouse_move_relative')
+@_paired_required
 def handle_mouse_move_relative(data):
     """Handle relative mouse movement."""
     global game_mode
@@ -3001,6 +3175,7 @@ def handle_mouse_move_relative(data):
 
 
 @socketio.on('get_mouse_pos')
+@_paired_required
 def handle_get_mouse_pos(sid=None):
     """Cleaned garbled docstring."""
     try:
@@ -3014,6 +3189,7 @@ def handle_get_mouse_pos(sid=None):
 
 
 @socketio.on('mouse_click')
+@_paired_required
 def handle_mouse_click(data):
     """Cleaned garbled docstring."""
     try:
@@ -3045,6 +3221,7 @@ def handle_mouse_click(data):
 
 
 @socketio.on('mouse_scroll')
+@_paired_required
 def handle_mouse_scroll(data):
     """Cleaned garbled docstring."""
     try:
@@ -3065,6 +3242,7 @@ def handle_mouse_scroll(data):
 
 
 @socketio.on('key_event')
+@_paired_required
 def handle_key_event(data):
     """Cleaned garbled docstring."""
     try:
@@ -3320,6 +3498,7 @@ def _xinput_apply_state(pad, payload):
 
 
 @socketio.on('xinput_connect')
+@_paired_required
 def handle_xinput_connect(data):
     sid = request.sid
     if not XINPUT_AVAILABLE:
@@ -3334,6 +3513,7 @@ def handle_xinput_connect(data):
 
 
 @socketio.on('xinput_disconnect')
+@_paired_required
 def handle_xinput_disconnect(data=None):
     sid = request.sid
     global xinput_pad, xinput_owner_sid, xinput_last_buttons
@@ -3353,6 +3533,7 @@ def handle_xinput_disconnect(data=None):
 
 
 @socketio.on('xinput_state')
+@_paired_required
 def handle_xinput_state(data):
     sid = request.sid
     global xinput_state_count, xinput_state_last_log
@@ -3368,6 +3549,7 @@ def handle_xinput_state(data):
     xinput_state_event.set()
 
 @socketio.on('gamepad_input')
+@_paired_required
 def handle_gamepad(data):
     """Cleaned garbled docstring."""
     global wasd_state
@@ -3422,6 +3604,7 @@ def handle_gamepad(data):
 
 
 @socketio.on('set_quality')
+@_paired_required
 def handle_set_quality(data, sid=None):
     """Cleaned garbled docstring."""
     global quality
@@ -3433,6 +3616,7 @@ def handle_set_quality(data, sid=None):
 
 
 @socketio.on('set_fps')
+@_paired_required
 def handle_set_fps(data, sid=None):
     """Cleaned garbled docstring."""
     global fps, webrtc_target_fps
@@ -3459,6 +3643,7 @@ def handle_set_fps(data, sid=None):
 
 
 @socketio.on('set_webrtc_scale')
+@_paired_required
 def handle_set_webrtc_scale(data):
     global webrtc_scale
     try:
@@ -3472,6 +3657,7 @@ def handle_set_webrtc_scale(data):
 
 
 @socketio.on('set_capture_mode')
+@_paired_required
 def handle_set_capture_mode(data):
     """Cleaned garbled docstring."""
     global dxgi_capture_enabled, dxgi_failure_count, dxgi_retry_after, dxgi_hard_disabled
@@ -3498,6 +3684,7 @@ def handle_set_capture_mode(data):
 
 
 @socketio.on('get_capture_info')
+@_paired_required
 def handle_get_capture_info():
     """Return current capture mode info."""
     emit('capture_info', {
@@ -3535,6 +3722,10 @@ def main():
     print(f"  Video HW encoders: {video_encoder_status.get('hardware_available', [])}")
     print(f"  Audio: {'ON' if audio_enabled else 'OFF'}")
     print(f"  Audio device hint: {audio_device_name or '(auto)'}")
+    print(f"  Pair security: {'ON' if pair_security_enabled else 'OFF'}")
+    if pair_security_enabled:
+        print(f"  Pair code: {pair_code}")
+        print(f"  Pair max attempts: {pair_max_attempts} (shutdown code {PAIR_SECURITY_EXIT_CODE})")
     print("-" * 50)
     print(f"  Control UI: http://{ip}:{port}")
     print(f"  Audio info: http://{ip}:{port}/api/audio_info")

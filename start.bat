@@ -95,6 +95,15 @@ if not defined RC_WEBRTC_AUDIO_TRANSPORT_BITRATE_CAP_SCALE (
 if not defined RC_WEBRTC_HIGHRES_MIN_BITRATE_BPS (
     set "RC_WEBRTC_HIGHRES_MIN_BITRATE_BPS=16000000"
 )
+if not defined RC_PAIR_ENABLED (
+    set "RC_PAIR_ENABLED=1"
+)
+if not defined RC_PAIR_CODE (
+    set "RC_PAIR_CODE=041013"
+)
+if not defined RC_PAIR_MAX_ATTEMPTS (
+    set "RC_PAIR_MAX_ATTEMPTS=3"
+)
 if not defined RC_SERVER_AUTORESTART (
     set "RC_SERVER_AUTORESTART=1"
 )
@@ -105,15 +114,25 @@ if not exist "%RC_ARTIFACTS_DIR%" mkdir "%RC_ARTIFACTS_DIR%" >nul 2>&1
 if not exist "%RC_ARTIFACTS_DIR%\\logs" mkdir "%RC_ARTIFACTS_DIR%\\logs" >nul 2>&1
 if not exist "%RC_ARTIFACTS_DIR%\\samples" mkdir "%RC_ARTIFACTS_DIR%\\samples" >nul 2>&1
 if not exist "%RC_ARTIFACTS_DIR%\\pids" mkdir "%RC_ARTIFACTS_DIR%\\pids" >nul 2>&1
+set "SECURITY_FLAG=%RC_ARTIFACTS_DIR%\\security_shutdown.flag"
+if exist "%SECURITY_FLAG%" del /f /q "%SECURITY_FLAG%" >nul 2>&1
 
 set "EXIT_CODE=0"
 
 :server_loop
 call %PY_CMD% server.py --dxgi %*
 set "EXIT_CODE=%ERRORLEVEL%"
+if exist "%SECURITY_FLAG%" (
+    set "EXIT_CODE=23"
+    set "RC_SERVER_AUTORESTART=0"
+    echo [SECURITY] Shutdown flag detected: %SECURITY_FLAG%
+)
+if not "%EXIT_CODE%"=="0" (
+    echo [INFO] Server process exited with code %EXIT_CODE%.
+)
 
 if "%RC_SERVER_AUTORESTART%"=="1" (
-    if not "%EXIT_CODE%"=="0" (
+    if not "%EXIT_CODE%"=="0" if not "%EXIT_CODE%"=="23" (
         echo [WARN] Server exited unexpectedly with code %EXIT_CODE%.
         echo [INFO] Restarting in %RC_SERVER_RESTART_DELAY_SEC%s... (set RC_SERVER_AUTORESTART=0 to disable)
         timeout /t %RC_SERVER_RESTART_DELAY_SEC% /nobreak >nul
@@ -121,7 +140,9 @@ if "%RC_SERVER_AUTORESTART%"=="1" (
     )
 )
 
-if not "%EXIT_CODE%"=="0" (
+if "%EXIT_CODE%"=="23" (
+    echo [SECURITY] Pair code failed %RC_PAIR_MAX_ATTEMPTS% times. Server stopped and auto-restart is blocked.
+) else if not "%EXIT_CODE%"=="0" (
     echo [ERROR] Server exited with code %EXIT_CODE%.
 )
 

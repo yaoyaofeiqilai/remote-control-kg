@@ -102,6 +102,26 @@ set RC_DEBUG=1
 start.bat
 ```
 
+## Pair Code Security
+
+Web clients must enter a 6-digit pair code before control is enabled.
+Default pair code is `041013`.
+
+When pair code validation fails 3 times globally, server exits immediately for safety.
+`start.bat` now also checks `artifacts/security_shutdown.flag` to block auto-restart after this event.
+
+Env vars:
+- `RC_PAIR_ENABLED=1`
+- `RC_PAIR_CODE=041013`
+- `RC_PAIR_MAX_ATTEMPTS=3`
+
+Example (custom code):
+
+```bat
+set RC_PAIR_CODE=123456
+start.bat
+```
+
 ## Notes
 
 - Keep usage inside trusted LAN environments.

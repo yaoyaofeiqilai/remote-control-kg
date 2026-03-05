@@ -35,6 +35,15 @@ function debugLog(...args) {
 const state = {
     socket: null,
     connected: false,
+    auth: {
+        required: true,
+        paired: false,
+        shutdown: false,
+        waiting: false,
+        remainingAttempts: 3,
+        maxAttempts: 3,
+        lastError: '',
+    },
     currentMode: 'touch', // touch, gamepad, keyboard
     screenWidth: 1920,
     screenHeight: 1080,
@@ -139,6 +148,7 @@ const state = {
 
 let fpsEmitTimer = null;
 let lastSentFps = null;
+const PRE_AUTH_EMIT_EVENTS = new Set(['pair_request']);
 
 function sendFpsSetting(value, immediate = false) {
     const v = parseInt(value, 10);
@@ -1083,11 +1093,111 @@ function setSystemMuteRequested(muted) {
     updateAudioControlUI();
     emit('set_system_mute', { muted: !!muted });
 }
+
+function setConnectionStatus(text, statusClass) {
+    const statusEl = document.getElementById('connection-status');
+    if (!statusEl) return;
+    statusEl.textContent = text || '';
+    statusEl.className = statusClass || '';
+}
+
+function setControlVisibility(visible) {
+    const pairGate = document.getElementById('pair-gate');
+    const controlShell = document.getElementById('control-shell');
+    if (pairGate) {
+        pairGate.classList.toggle('hidden', !!visible);
+    }
+    if (controlShell) {
+        controlShell.classList.toggle('hidden', !visible);
+    }
+}
+
+function updatePairAttempts(remaining, maxAttempts) {
+    const attemptsEl = document.getElementById('pair-attempts');
+    if (!attemptsEl) return;
+    const remain = Math.max(0, parseInt(remaining ?? state.auth.remainingAttempts ?? 0, 10) || 0);
+    const maxTry = Math.max(1, parseInt(maxAttempts ?? state.auth.maxAttempts ?? 3, 10) || 3);
+    state.auth.remainingAttempts = remain;
+    state.auth.maxAttempts = maxTry;
+    attemptsEl.textContent = `剩余尝试：${remain} / ${maxTry}`;
+}
+
+function setPairError(message) {
+    const errorEl = document.getElementById('pair-error');
+    if (!errorEl) return;
+    if (!message) {
+        errorEl.textContent = '';
+        errorEl.classList.add('hidden');
+        return;
+    }
+    errorEl.textContent = String(message);
+    errorEl.classList.remove('hidden');
+}
+
+function setPairPending(pending) {
+    state.auth.waiting = !!pending;
+    const inputEl = document.getElementById('pair-code-input');
+    const submitBtn = document.getElementById('pair-submit-btn');
+    if (inputEl) inputEl.disabled = !!pending || !!state.auth.shutdown;
+    if (submitBtn) {
+        submitBtn.disabled = !!pending || !!state.auth.shutdown;
+        submitBtn.textContent = pending ? '校验中...' : '连接电脑';
+    }
+}
+
+function sanitizePairCodeInput() {
+    const inputEl = document.getElementById('pair-code-input');
+    if (!inputEl) return '';
+    const cleaned = String(inputEl.value || '').replace(/\D/g, '').slice(0, 6);
+    if (cleaned !== inputEl.value) inputEl.value = cleaned;
+    return cleaned;
+}
+
+function initPairGate() {
+    const inputEl = document.getElementById('pair-code-input');
+    const submitBtn = document.getElementById('pair-submit-btn');
+    if (!inputEl || !submitBtn) return;
+
+    const submitPairCode = () => {
+        if (state.auth.shutdown) return;
+        if (!state.connected || !state.socket) {
+            setPairError('服务器尚未连接，请稍后重试');
+            return;
+        }
+        const code = sanitizePairCodeInput();
+        if (code.length !== 6) {
+            setPairError('请输入 6 位数字配对码');
+            return;
+        }
+        setPairError('');
+        setPairPending(true);
+        state.socket.emit('pair_request', { code });
+    };
+
+    inputEl.addEventListener('input', () => {
+        sanitizePairCodeInput();
+        setPairError('');
+    });
+    inputEl.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            submitPairCode();
+        }
+    });
+    submitBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        submitPairCode();
+    });
+
+    setControlVisibility(false);
+    setPairPending(false);
+    setPairError('');
+    updatePairAttempts(3, 3);
+}
+
 // ============ Socket.IO 连接 ============
 function initSocket() {
-    const statusEl = document.getElementById('connection-status');
-    statusEl.textContent = '连接中...';
-    statusEl.className = 'connecting';
+    setConnectionStatus('连接中...', 'connecting');
 
     setAudioTransportLocalState(true, false);
     setSystemMuteLocalState(false, false, false);
@@ -1103,8 +1213,15 @@ function initSocket() {
     state.socket.on('connect', () => {
         debugLog('[Socket] connected');
         state.connected = true;
-        statusEl.textContent = '已连接';
-        statusEl.className = 'connected';
+        state.auth.paired = false;
+        state.auth.required = true;
+        state.auth.shutdown = false;
+        const banner = document.getElementById('security-shutdown-banner');
+        if (banner) banner.classList.add('hidden');
+        setPairPending(false);
+        setPairError('');
+        setControlVisibility(false);
+        setConnectionStatus('已连接，等待配对', 'connecting');
         if (state.currentMode === 'controller' &&
             state.physicalGamepad &&
             typeof state.physicalGamepad.setEnabled === 'function') {
@@ -1115,27 +1232,106 @@ function initSocket() {
     state.socket.on('disconnect', () => {
         debugLog('[Socket] disconnected');
         state.connected = false;
+        state.auth.paired = false;
+        state.auth.required = true;
         clearWebRTCRestartTimer();
         state.webrtc.restartAttempts = 0;
         if (state.physicalGamepad) {
             state.physicalGamepad.serverAttached = false;
             state.physicalGamepad.connected = false;
         }
-        statusEl.textContent = '已断开';
-        statusEl.className = 'disconnected';
+        setConnectionStatus('已断开', 'disconnected');
         stopWebRTC();
         state.audio.transportPending = false;
         state.audio.systemMutePending = false;
         updateAudioControlUI();
+        stopMouseSync();
+        if (!state.auth.shutdown) {
+            setControlVisibility(false);
+            setPairPending(false);
+            setPairError('连接已断开，请等待重连后重新配对');
+        }
     });
 
     state.socket.on('connect_error', (err) => {
         console.error('[Socket] connect error:', err);
-        statusEl.textContent = '连接失败';
-        statusEl.className = 'disconnected';
+        setConnectionStatus('连接失败', 'disconnected');
+    });
+
+    state.socket.on('auth_required', (data) => {
+        if (state.auth.shutdown) return;
+        state.auth.required = !!(data && data.required !== false);
+        state.auth.paired = false;
+        updatePairAttempts(data && data.remaining_attempts, data && data.max_attempts);
+        setControlVisibility(false);
+        setPairPending(false);
+        setPairError('请输入配对码以继续');
+        const inputEl = document.getElementById('pair-code-input');
+        if (inputEl) {
+            inputEl.focus();
+            inputEl.select();
+        }
+        if (state.connected) {
+            setConnectionStatus('等待配对码验证', 'connecting');
+        }
+    });
+
+    state.socket.on('pair_result', (data) => {
+        const ok = !!(data && data.ok);
+        updatePairAttempts(data && data.remaining_attempts, data && data.max_attempts);
+        setPairPending(false);
+        if (ok) {
+            state.auth.paired = true;
+            state.auth.required = false;
+            state.auth.lastError = '';
+            setPairError('');
+            setControlVisibility(true);
+            setConnectionStatus('已连接', 'connected');
+            return;
+        }
+        state.auth.paired = false;
+        state.auth.required = true;
+        state.auth.lastError = 'invalid_code';
+        const remaining = Math.max(0, parseInt(data && data.remaining_attempts, 10) || 0);
+        setPairError(`配对码错误，剩余 ${remaining} 次机会`);
+        const card = document.querySelector('.pair-card');
+        if (card) {
+            card.classList.remove('shake');
+            void card.offsetWidth;
+            card.classList.add('shake');
+        }
+    });
+
+    state.socket.on('security_shutdown', (data) => {
+        state.auth.shutdown = true;
+        state.auth.paired = false;
+        state.auth.required = true;
+        setPairPending(false);
+        setControlVisibility(false);
+        stopWebRTC();
+        stopMouseSync();
+        setConnectionStatus('服务器已停服', 'disconnected');
+        const msgEl = document.getElementById('security-shutdown-msg');
+        if (msgEl) {
+            const attempts = parseInt(data && data.attempts, 10) || state.auth.maxAttempts || 3;
+            msgEl.textContent = `配对码连续错误 ${attempts} 次，服务器已停止运行。`;
+        }
+        const banner = document.getElementById('security-shutdown-banner');
+        if (banner) banner.classList.remove('hidden');
+        const inputEl = document.getElementById('pair-code-input');
+        if (inputEl) inputEl.disabled = true;
+        const submitBtn = document.getElementById('pair-submit-btn');
+        if (submitBtn) submitBtn.disabled = true;
+        setPairError('请在电脑端手动重启服务后再尝试连接。');
     });
 
     state.socket.on('connected', (data) => {
+        state.auth.paired = true;
+        state.auth.required = false;
+        setControlVisibility(true);
+        setPairPending(false);
+        setPairError('');
+        setConnectionStatus('已连接', 'connected');
         state.screenWidth = data.screen_width;
         state.screenHeight = data.screen_height;
         debugLog('[Socket] screen size:', state.screenWidth, 'x', state.screenHeight);
@@ -2645,7 +2841,9 @@ function initModeSwitching() {
             state.currentMode = mode;
 
             // 鏇存柊鎸囩ず鍣?
-            modeIndicator.textContent = modeNames[mode];
+            if (modeIndicator) {
+                modeIndicator.textContent = modeNames[mode];
+            }
             if (modeDescription) {
                 modeDescription.textContent = modeDescs[mode];
             }
@@ -2868,9 +3066,9 @@ function initSettings() {
 
 // ============ 杈呭姪鍑芥暟 ============
 function emit(event, data) {
-    if (state.connected && state.socket) {
-        state.socket.emit(event, data);
-    }
+    if (!state.connected || !state.socket) return;
+    if (!state.auth.paired && !PRE_AUTH_EMIT_EVENTS.has(String(event || ''))) return;
+    state.socket.emit(event, data);
 }
 
 // FPS 璁＄畻
@@ -3231,6 +3429,7 @@ function initPhysicalGamepadForwarding() {
 }
 
 function init() {
+    initPairGate();
     initSocket();
     initAudioUnlockControls();
     initTouchMode();

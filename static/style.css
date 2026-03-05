@@ -7,117 +7,331 @@
 }
 
 :root {
-    --ui-bg: rgba(18, 18, 26, 0.82);
-    --ui-bg-2: rgba(30, 30, 44, 0.78);
-    --ui-border: rgba(255, 255, 255, 0.10);
-    --ui-border-soft: rgba(255, 255, 255, 0.06);
-    --ui-text: rgba(255, 255, 255, 0.92);
-    --ui-muted: rgba(255, 255, 255, 0.62);
-    --ui-dim: rgba(255, 255, 255, 0.40);
-    --ui-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
-    --ui-shadow-soft: 0 10px 26px rgba(0, 0, 0, 0.35);
-    --ui-radius: 18px;
-    --ui-radius-sm: 12px;
-    --ui-accent: #6c5ce7;
-    --ui-accent-2: #a29bfe;
-    --ui-accent-grad: linear-gradient(135deg, var(--ui-accent) 0%, var(--ui-accent-2) 100%);
+    --bg-0: #061522;
+    --bg-1: #0d2333;
+    --bg-2: #12344a;
+    --panel: rgba(8, 25, 37, 0.78);
+    --panel-2: rgba(14, 40, 57, 0.84);
+    --panel-3: rgba(18, 52, 74, 0.9);
+    --border: rgba(123, 212, 255, 0.26);
+    --border-soft: rgba(137, 220, 255, 0.12);
+    --text-main: #eff9ff;
+    --text-soft: #a8ccdf;
+    --text-dim: #7ea8bf;
+    --accent: #3ed9ff;
+    --accent-strong: #00b8ff;
+    --accent-warm: #ff8a4c;
+    --accent-grad: linear-gradient(130deg, #3ed9ff 0%, #13b7ff 52%, #4ee4df 100%);
+    --danger: #ff6d7d;
+    --ok: #34e07f;
+    --warn: #ffb454;
+    --shadow-heavy: 0 30px 64px rgba(0, 0, 0, 0.48);
+    --shadow-mid: 0 14px 30px rgba(0, 0, 0, 0.35);
+    --radius-xl: 24px;
+    --radius-lg: 18px;
+    --radius-md: 12px;
+    --radius-sm: 10px;
 }
 
+html,
 body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    background: #000;
-    color: #fff;
+    width: 100%;
+    height: 100%;
     overflow: hidden;
     touch-action: none;
 }
 
-#app {
-    width: 100vw;
-    height: 100vh;
-    height: 100dvh;
-    display: flex;
-    flex-direction: column;
+body {
+    font-family: "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+    color: var(--text-main);
+    background:
+        radial-gradient(1200px 520px at 12% -10%, rgba(70, 178, 225, 0.36), rgba(70, 178, 225, 0) 58%),
+        radial-gradient(860px 440px at 100% 0%, rgba(34, 198, 210, 0.24), rgba(34, 198, 210, 0) 62%),
+        linear-gradient(165deg, var(--bg-0), var(--bg-1) 45%, var(--bg-2) 100%);
 }
 
-/* 状态栏 */
-#status-bar {
+body::before {
+    content: "";
     position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: calc(28px + env(safe-area-inset-top));
-    background: rgba(0, 0, 0, 0.7);
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: env(safe-area-inset-top) 10px 0 10px;
-    z-index: 1000;
-    font-size: 12px;
-    backdrop-filter: blur(4px);
+    inset: 0;
+    pointer-events: none;
+    background-image:
+        linear-gradient(rgba(144, 224, 255, 0.05) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(144, 224, 255, 0.04) 1px, transparent 1px);
+    background-size: 28px 28px;
+    opacity: 0.28;
 }
 
-#connection-status {
-    padding: 2px 8px;
-    border-radius: 4px;
-}
-
-#connection-status.connecting {
-    background: #f39c12;
-    color: #000;
-}
-
-#connection-status.connected {
-    background: #27ae60;
-}
-
-#connection-status.disconnected {
-    background: #e74c3c;
-}
-
-#audio-unlock-btn {
-    border: 1px solid rgba(255, 255, 255, 0.25);
-    background: rgba(231, 76, 60, 0.85);
-    color: #fff;
-    border-radius: 4px;
-    font-size: 11px;
-    line-height: 1;
-    padding: 4px 8px;
-}
-
-#audio-unlock-btn.hidden {
-    display: none;
-}
-
-#fps-counter {
-    color: #888;
-}
-
-/* 屏幕显示区域 - 全屏无遮挡 */
-#screen-container {
-    flex: 1;
+#app {
     position: relative;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    background: #000;
     width: 100vw;
     height: 100vh;
     height: 100dvh;
     overflow: hidden;
 }
 
-#screen {
-    max-width: 100%;
-    max-height: 100%;
-    object-fit: contain;
+.hidden {
+    display: none !important;
+}
+
+#pair-gate {
+    position: absolute;
+    inset: 0;
+    z-index: 4000;
+    display: grid;
+    place-items: center;
+    padding: clamp(16px, 4vw, 36px);
+    background:
+        radial-gradient(1000px 420px at 50% -20%, rgba(56, 183, 235, 0.2), rgba(56, 183, 235, 0) 62%),
+        linear-gradient(180deg, rgba(4, 18, 28, 0.88), rgba(8, 22, 34, 0.94));
+}
+
+.pair-card {
+    width: min(540px, 95vw);
+    border-radius: var(--radius-xl);
+    padding: clamp(20px, 3.8vw, 34px);
+    border: 1px solid var(--border);
+    background:
+        linear-gradient(160deg, rgba(14, 47, 68, 0.94), rgba(8, 31, 46, 0.95)),
+        var(--panel);
+    box-shadow: var(--shadow-heavy);
+    display: grid;
+    gap: 14px;
+    backdrop-filter: blur(12px) saturate(1.05);
+}
+
+.pair-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: fit-content;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    letter-spacing: 1.2px;
+    color: #0a2230;
+    font-weight: 700;
+    background: linear-gradient(120deg, #8fe7ff, #33d3ff);
+}
+
+.pair-card h1 {
+    font-size: clamp(22px, 4.2vw, 32px);
+    line-height: 1.2;
+    letter-spacing: 0.4px;
+    font-weight: 700;
+}
+
+.pair-lead {
+    color: var(--text-soft);
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.pair-form {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 10px;
+}
+
+#pair-code-input {
+    height: 52px;
+    border-radius: 14px;
+    border: 1px solid rgba(111, 211, 255, 0.44);
+    background: rgba(3, 18, 28, 0.75);
+    color: var(--text-main);
+    padding: 0 16px;
+    font-size: 22px;
+    letter-spacing: 6px;
+    text-align: center;
+    outline: none;
+    font-weight: 700;
+}
+
+#pair-code-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 4px rgba(62, 217, 255, 0.2);
+}
+
+#pair-submit-btn {
+    height: 52px;
+    border-radius: 14px;
+    border: 1px solid rgba(84, 211, 255, 0.5);
+    background: var(--accent-grad);
+    color: #032639;
+    font-size: 15px;
+    font-weight: 700;
+    padding: 0 16px;
+    cursor: pointer;
+    transition: transform 0.12s ease, filter 0.12s ease;
+}
+
+#pair-submit-btn:active {
+    transform: scale(0.97);
+    filter: brightness(0.95);
+}
+
+#pair-submit-btn:disabled,
+#pair-code-input:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+#pair-attempts {
+    color: #89e7ff;
+    font-size: 13px;
+    letter-spacing: 0.2px;
+}
+
+#pair-error {
+    color: #ffd7de;
+    border: 1px solid rgba(255, 109, 125, 0.4);
+    background: rgba(255, 109, 125, 0.15);
+    border-radius: 10px;
+    font-size: 13px;
+    padding: 8px 10px;
+}
+
+.pair-card.shake {
+    animation: pairShake 0.32s ease;
+}
+
+@keyframes pairShake {
+    0% { transform: translateX(0); }
+    25% { transform: translateX(-6px); }
+    50% { transform: translateX(6px); }
+    75% { transform: translateX(-4px); }
+    100% { transform: translateX(0); }
+}
+
+#security-shutdown-banner {
+    position: absolute;
+    inset: 0;
+    z-index: 5000;
+    display: grid;
+    place-items: center;
+    padding: 20px;
+    background: rgba(8, 16, 24, 0.82);
+    backdrop-filter: blur(6px);
+}
+
+.security-shutdown-content {
+    width: min(520px, 94vw);
+    background: linear-gradient(160deg, rgba(55, 16, 23, 0.94), rgba(42, 10, 18, 0.92));
+    border: 1px solid rgba(255, 120, 130, 0.45);
+    border-radius: 20px;
+    box-shadow: 0 24px 58px rgba(0, 0, 0, 0.58);
+    padding: 24px;
+    text-align: center;
+}
+
+.security-shutdown-content h2 {
+    color: #ffd6dc;
+    margin-bottom: 10px;
+    font-size: 24px;
+}
+
+.security-shutdown-content p {
+    color: #ffdbe1;
+    line-height: 1.6;
+    font-size: 14px;
+}
+
+#control-shell {
+    width: 100%;
+    height: 100%;
+}
+
+#status-bar {
+    position: fixed;
+    top: calc(env(safe-area-inset-top) + 8px);
+    left: 10px;
+    right: 10px;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
     pointer-events: none;
 }
 
+#status-bar > * {
+    pointer-events: auto;
+}
+
+#status-bar #connection-status,
+#status-bar #audio-unlock-btn,
+#status-bar #fps-counter {
+    backdrop-filter: blur(8px);
+}
+
+#connection-status {
+    padding: 5px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    letter-spacing: 0.5px;
+    font-weight: 700;
+    border: 1px solid transparent;
+}
+
+#connection-status.connecting {
+    color: #ffe1be;
+    background: rgba(255, 180, 84, 0.16);
+    border-color: rgba(255, 180, 84, 0.36);
+}
+
+#connection-status.connected {
+    color: #d7ffea;
+    background: rgba(52, 224, 127, 0.17);
+    border-color: rgba(52, 224, 127, 0.38);
+}
+
+#connection-status.disconnected {
+    color: #ffd9dd;
+    background: rgba(255, 109, 125, 0.2);
+    border-color: rgba(255, 109, 125, 0.46);
+}
+
+#audio-unlock-btn {
+    border: 1px solid rgba(147, 222, 255, 0.4);
+    background: rgba(8, 40, 58, 0.82);
+    color: #dcf7ff;
+    border-radius: 999px;
+    font-size: 11px;
+    line-height: 1;
+    padding: 7px 10px;
+}
+
+#fps-counter {
+    color: #b3e8ff;
+    font-size: 11px;
+    letter-spacing: 0.3px;
+    font-weight: 600;
+    border: 1px solid rgba(147, 222, 255, 0.3);
+    background: rgba(8, 40, 58, 0.7);
+    border-radius: 999px;
+    padding: 6px 10px;
+}
+
+#screen-container {
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+    display: grid;
+    place-items: center;
+    background:
+        radial-gradient(1200px 460px at 82% -20%, rgba(78, 214, 224, 0.18), rgba(78, 214, 224, 0) 58%),
+        linear-gradient(160deg, rgba(5, 16, 26, 0.9), rgba(7, 20, 30, 0.95));
+}
+
+#screen,
 #screen-video {
     max-width: 100%;
     max-height: 100%;
     object-fit: contain;
     pointer-events: none;
+    filter: saturate(1.05) contrast(1.03);
 }
 
 #remote-audio {
@@ -126,59 +340,45 @@ body {
 
 #touch-overlay {
     position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
+    inset: 0;
     cursor: crosshair;
 }
 
-/* 虚拟鼠标指针 - 高可见度 */
 #virtual-cursor {
     position: fixed;
     width: 32px;
     height: 32px;
     pointer-events: none;
-    z-index: 1000;
+    z-index: 1020;
     transform: translate(-50%, -50%);
-}
-
-#virtual-cursor.hidden {
-    display: none !important;
 }
 
 .cursor-crosshair {
     position: absolute;
-    top: 50%;
-    left: 50%;
-    width: 32px;
-    height: 32px;
-    transform: translate(-50%, -50%);
+    inset: 0;
 }
 
 .cursor-crosshair::before,
 .cursor-crosshair::after {
-    content: '';
+    content: "";
     position: absolute;
-    background: #ff0000;
-    box-shadow: 0 0 4px rgba(255, 0, 0, 0.8), 0 0 8px rgba(255, 0, 0, 0.4);
+    background: #ff6d7d;
+    box-shadow: 0 0 8px rgba(255, 109, 125, 0.55);
 }
 
-/* 水平线 */
 .cursor-crosshair::before {
-    width: 32px;
-    height: 3px;
-    top: 50%;
     left: 0;
+    top: 50%;
+    width: 32px;
+    height: 2px;
     transform: translateY(-50%);
 }
 
-/* 垂直线 */
 .cursor-crosshair::after {
-    width: 3px;
-    height: 32px;
-    left: 50%;
     top: 0;
+    left: 50%;
+    width: 2px;
+    height: 32px;
     transform: translateX(-50%);
 }
 
@@ -186,405 +386,235 @@ body {
     position: absolute;
     top: 50%;
     left: 50%;
-    width: 10px;
-    height: 10px;
-    background: #ff0000;
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
     transform: translate(-50%, -50%);
-    box-shadow: 0 0 6px rgba(255, 0, 0, 0.8), 0 0 12px rgba(255, 0, 0, 0.5);
-    border: 1px solid #fff;
+    background: #ffeef0;
+    border: 1px solid #ff8693;
 }
 
-/* 点击反馈动画 */
 #virtual-cursor.clicking {
     animation: cursorClick 0.15s ease;
 }
 
-/* 游戏模式下的光标 - 半透明减少干扰 */
-#virtual-cursor.game-mode-cursor .cursor-crosshair::before,
-#virtual-cursor.game-mode-cursor .cursor-crosshair::after {
-    background: rgba(255, 0, 0, 0.5);
-    box-shadow: 0 0 2px rgba(255, 0, 0, 0.4);
-}
-
-#virtual-cursor.game-mode-cursor .cursor-dot {
-    background: rgba(255, 0, 0, 0.5);
-    box-shadow: 0 0 3px rgba(255, 0, 0, 0.4);
+#virtual-cursor.game-mode-cursor {
+    opacity: 0.65;
 }
 
 @keyframes cursorClick {
     0% { transform: translate(-50%, -50%) scale(1); }
-    50% { transform: translate(-50%, -50%) scale(0.85); }
+    50% { transform: translate(-50%, -50%) scale(0.88); }
     100% { transform: translate(-50%, -50%) scale(1); }
 }
 
-/* 悬浮设置按钮 */
-#settings-btn {
+.floating-btn,
+#mode-indicator {
     position: absolute;
-    top: 35px;
-    right: 10px;
+    top: calc(env(safe-area-inset-top) + 42px);
+    border-radius: 12px;
+    border: 1px solid var(--border-soft);
+    box-shadow: var(--shadow-mid);
+    backdrop-filter: blur(8px);
+}
+
+#settings-btn {
+    right: 12px;
     width: 44px;
     height: 44px;
-    border: none;
-    background: rgba(0, 0, 0, 0.6);
-    color: #fff;
     border-radius: 50%;
+    border: 1px solid rgba(137, 220, 255, 0.3);
+    background: rgba(10, 41, 59, 0.74);
+    color: #d8f3ff;
     font-size: 20px;
-    cursor: pointer;
-    z-index: 100;
-    backdrop-filter: blur(4px);
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    transition: all 0.2s;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    line-height: 1;
+    font-weight: 600;
 }
 
 #settings-btn:active {
-    transform: scale(0.95);
-    background: rgba(52, 152, 219, 0.8);
+    transform: scale(0.96);
 }
 
-/* 模式指示器 */
 #mode-indicator {
-    position: absolute;
-    top: 35px;
-    left: 10px;
-    padding: 8px 12px;
-    background: rgba(0, 0, 0, 0.6);
-    border-radius: 6px;
-    font-size: 12px;
-    color: #fff;
-    z-index: 100;
-    backdrop-filter: blur(4px);
-    border: 1px solid rgba(255, 255, 255, 0.2);
+    display: none !important;
 }
 
-/* 设置面板 */
 #settings-panel {
     position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: rgba(0, 0, 0, 0.68);
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    z-index: 2000;
-    backdrop-filter: blur(10px) saturate(1.15);
-}
-
-#settings-panel.hidden {
-    display: none;
-}
-
-.settings-content {
-    background: radial-gradient(1200px 520px at 50% 0%, rgba(108, 92, 231, 0.18) 0%, rgba(0, 0, 0, 0) 52%),
-        linear-gradient(180deg, var(--ui-bg) 0%, var(--ui-bg-2) 100%);
-    padding: 16px;
-    border-radius: 22px;
-    width: 90%;
-    max-width: 400px;
-    max-height: calc(88vh - env(safe-area-inset-top));
-    overflow-y: auto;
-    border: 1px solid var(--ui-border);
-    box-shadow: var(--ui-shadow);
+    inset: 0;
+    z-index: 2200;
+    display: grid;
+    place-items: center;
+    padding: 18px;
+    background: rgba(3, 11, 18, 0.65);
     backdrop-filter: blur(12px);
 }
 
-.settings-content h3 {
-    margin: 0;
-    font-size: 16px;
-    font-weight: 700;
-    letter-spacing: 0.5px;
-    color: var(--ui-text);
+.settings-content {
+    width: min(450px, 95vw);
+    max-height: calc(88vh - env(safe-area-inset-top));
+    overflow-y: auto;
+    border-radius: 24px;
+    border: 1px solid var(--border);
+    background:
+        radial-gradient(900px 320px at 88% -10%, rgba(74, 217, 255, 0.18), rgba(74, 217, 255, 0) 58%),
+        linear-gradient(165deg, var(--panel-3), var(--panel-2));
+    box-shadow: var(--shadow-heavy);
+    padding: 16px;
 }
 
 .settings-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 6px 6px 12px 6px;
-    gap: 12px;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.settings-content h3 {
+    font-size: 18px;
+    letter-spacing: 0.4px;
 }
 
 .settings-close {
     width: 36px;
     height: 36px;
-    border: 1px solid var(--ui-border-soft);
-    background: rgba(255, 255, 255, 0.08);
-    color: var(--ui-text);
-    border-radius: 12px;
-    font-size: 22px;
-    line-height: 1;
-    cursor: pointer;
-    transition: transform 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+    border-radius: 10px;
+    border: 1px solid rgba(137, 220, 255, 0.3);
+    background: rgba(10, 36, 52, 0.8);
+    color: var(--text-main);
+    font-weight: 700;
 }
 
 .settings-close:active {
-    transform: scale(0.96);
-    background: rgba(255, 255, 255, 0.14);
-    border-color: var(--ui-border);
+    transform: scale(0.95);
 }
 
 .setting-section {
-    margin-bottom: 14px;
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-lg);
+    background: rgba(5, 22, 33, 0.66);
     padding: 14px;
-    border-radius: var(--ui-radius);
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid var(--ui-border-soft);
-}
-
-.setting-section label {
-    display: block;
     margin-bottom: 12px;
-    font-size: 12px;
-    color: var(--ui-muted);
-    letter-spacing: 0.8px;
 }
 
-/* 模式切换在设置中 */
+.setting-section > label {
+    display: block;
+    margin-bottom: 10px;
+    font-size: 12px;
+    letter-spacing: 0.8px;
+    color: #8dc7de;
+}
+
 #mode-tabs {
     display: flex;
     gap: 6px;
-    margin-bottom: 10px;
     padding: 4px;
-    border-radius: 14px;
-    background: rgba(0, 0, 0, 0.22);
-    border: 1px solid var(--ui-border-soft);
+    border-radius: 12px;
+    background: rgba(5, 20, 31, 0.72);
+    border: 1px solid rgba(137, 220, 255, 0.13);
 }
 
 .mode-btn {
     flex: 1;
-    padding: 10px 8px;
-    border: none;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    padding: 9px 8px;
     background: transparent;
-    color: var(--ui-muted);
-    border-radius: 12px;
+    color: #9bc7dc;
     font-size: 13px;
-    cursor: pointer;
-    transition: transform 0.12s ease, background 0.12s ease, color 0.12s ease;
 }
 
 .mode-btn.active {
-    background: var(--ui-accent-grad);
-    color: #fff;
-    box-shadow: 0 10px 20px rgba(108, 92, 231, 0.35);
+    color: #053042;
+    background: linear-gradient(130deg, #92e7ff, #5cd8ff);
+    border-color: rgba(137, 220, 255, 0.2);
+    font-weight: 700;
 }
 
 .mode-desc {
+    margin-top: 10px;
     font-size: 12px;
-    color: var(--ui-dim);
-    text-align: center;
-    padding: 10px 12px;
-    background: rgba(0, 0, 0, 0.20);
-    border-radius: 12px;
-    min-height: 36px;
-    border: 1px solid rgba(255, 255, 255, 0.05);
+    line-height: 1.45;
+    color: var(--text-soft);
 }
 
 .setting-item {
     display: flex;
     align-items: center;
-    margin-bottom: 12px;
-    gap: 12px;
-}
-
-.tools-layout {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 128px;
-    gap: 12px;
-    align-items: start;
-}
-
-.tools-main .setting-item {
+    gap: 10px;
     margin-bottom: 10px;
 }
 
-.audio-side-controls {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    padding: 10px;
-    border-radius: 14px;
-    background: rgba(0, 0, 0, 0.2);
-    border: 1px solid rgba(255, 255, 255, 0.06);
+.setting-item:last-child {
+    margin-bottom: 0;
 }
 
-.audio-side-title {
-    font-size: 12px;
-    color: var(--ui-muted);
-    letter-spacing: 0.6px;
-}
-
-.audio-side-item {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-
-.audio-side-item label {
-    margin: 0;
-    font-size: 12px;
-    color: var(--ui-text);
-}
-
-.audio-side-item span {
-    text-align: center;
-    font-size: 11px;
-    color: var(--ui-accent-2);
-    background: rgba(108, 92, 231, 0.12);
-    border: 1px solid rgba(108, 92, 231, 0.22);
-    padding: 4px 8px;
-    border-radius: 10px;
-}
-
-.setting-item label {
-    flex: 0 0 86px;
+.setting-item > label {
+    flex: 0 0 94px;
     font-size: 13px;
-    color: var(--ui-text);
+    color: #d7f3ff;
 }
 
 .setting-item input[type="range"] {
     flex: 1;
-    accent-color: var(--ui-accent);
+    accent-color: var(--accent-strong);
 }
 
 .setting-item span {
-    flex: 0 0 50px;
-    text-align: right;
+    flex: 0 0 56px;
+    border-radius: 999px;
+    border: 1px solid rgba(90, 200, 247, 0.32);
+    background: rgba(7, 34, 49, 0.8);
+    text-align: center;
+    color: #9ae8ff;
     font-size: 12px;
-    color: var(--ui-accent-2);
-    background: rgba(108, 92, 231, 0.12);
-    border: 1px solid rgba(108, 92, 231, 0.22);
-    padding: 4px 8px;
-    border-radius: 10px;
+    padding: 4px 6px;
 }
 
-#settings-panel .setting-item input[type="checkbox"],
-#settings-panel .audio-side-item input[type="checkbox"] {
+#settings-panel input[type="checkbox"] {
     appearance: none;
-    -webkit-appearance: none;
     width: 44px;
-    height: 26px;
+    height: 25px;
     border-radius: 999px;
-    background: rgba(255, 255, 255, 0.12);
-    border: 1px solid rgba(255, 255, 255, 0.16);
+    border: 1px solid rgba(137, 220, 255, 0.32);
+    background: rgba(10, 36, 52, 0.82);
     position: relative;
-    cursor: pointer;
-    transition: background 0.18s ease, border-color 0.18s ease;
     flex: 0 0 auto;
 }
 
-#settings-panel .setting-item input[type="checkbox"]::after,
-#settings-panel .audio-side-item input[type="checkbox"]::after {
-    content: '';
+#settings-panel input[type="checkbox"]::after {
+    content: "";
     position: absolute;
     top: 50%;
     left: 3px;
-    width: 20px;
-    height: 20px;
+    width: 18px;
+    height: 18px;
     border-radius: 50%;
-    background: rgba(255, 255, 255, 0.92);
     transform: translateY(-50%);
-    box-shadow: 0 6px 14px rgba(0, 0, 0, 0.35);
-    transition: left 0.18s ease;
+    background: #dff8ff;
+    transition: left 0.16s ease;
 }
 
-#settings-panel .setting-item input[type="checkbox"]:checked,
-#settings-panel .audio-side-item input[type="checkbox"]:checked {
-    background: var(--ui-accent-grad);
-    border-color: rgba(108, 92, 231, 0.55);
+#settings-panel input[type="checkbox"]:checked {
+    background: linear-gradient(130deg, #44d6ff, #16bcff);
+    border-color: rgba(108, 224, 255, 0.65);
 }
 
-#settings-panel .setting-item input[type="checkbox"]:checked::after,
-#settings-panel .audio-side-item input[type="checkbox"]:checked::after {
-    left: 21px;
+#settings-panel input[type="checkbox"]:checked::after {
+    left: 22px;
 }
 
-.setting-actions {
-    flex: 1;
-    display: flex;
-    justify-content: flex-end;
-    gap: 10px;
-}
-
-#settings-panel .setting-actions {
-    display: none;
-}
-
-.setting-btn {
-    padding: 10px 14px;
-    border: 1px solid var(--ui-border-soft);
-    background: rgba(255, 255, 255, 0.08);
-    color: var(--ui-text);
-    border-radius: 12px;
-    font-size: 13px;
-    cursor: pointer;
-    transition: transform 0.12s ease, background 0.12s ease, border-color 0.12s ease;
-}
-
-.setting-btn.active {
-    background: var(--ui-accent-grad);
-    border-color: rgba(108, 92, 231, 0.55);
-    box-shadow: 0 10px 20px rgba(108, 92, 231, 0.35);
-}
-
-.setting-btn:active {
-    transform: scale(0.97);
-    background: rgba(255, 255, 255, 0.14);
-    border-color: var(--ui-border);
-}
-
-.close-btn {
-    width: 100%;
-    padding: 12px;
-    margin-top: 10px;
-    border: none;
-    background: #e74c3c;
-    color: #fff;
-    border-radius: 8px;
-    font-size: 16px;
-    cursor: pointer;
-}
-
-/* 游戏模式设置区域 */
 #game-mode-settings {
-    margin-top: 15px;
-    padding-top: 15px;
-    border-top: 2px solid #3498db;
+    border-top: 1px solid rgba(106, 204, 255, 0.3);
+    padding-top: 8px;
 }
 
-#game-mode-settings .setting-section label {
-    display: block;
-    font-weight: bold;
-    color: #3498db;
-    margin-bottom: 10px;
-    font-size: 14px;
-}
-
-#game-mode-settings .setting-item {
-    background: rgba(255, 255, 255, 0.04);
-    border-radius: 14px;
-    padding: 10px 12px;
-    margin-bottom: 10px;
-    border: 1px solid rgba(255, 255, 255, 0.05);
-}
-
-#game-mode-settings.hidden {
-    display: none;
-}
-
-/* 虚拟游戏手柄 */
 #gamepad-controls {
     position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
+    inset: 0;
+    z-index: 60;
     pointer-events: none;
-    z-index: 50;
 }
 
 #gamepad-controls > * {
@@ -593,358 +623,251 @@ body {
 
 .virtual-stick {
     position: absolute;
-    bottom: calc(env(safe-area-inset-bottom) + clamp(16px, 6vmin, 40px));
-    width: clamp(120px, 32vmin, 240px);
-    height: clamp(120px, 32vmin, 240px);
-    z-index: 55;
+    bottom: calc(env(safe-area-inset-bottom) + clamp(18px, 7vmin, 40px));
+    width: clamp(120px, 32vmin, 220px);
+    height: clamp(120px, 32vmin, 220px);
 }
 
 #left-stick {
-    left: clamp(12px, 4vmin, 70px);
-    bottom: calc(env(safe-area-inset-bottom) + clamp(24px, 10vmin, 90px));
-}
-
-#right-stick {
-    right: clamp(12px, 4vmin, 20px);
+    left: clamp(12px, 4vmin, 64px);
+    bottom: calc(env(safe-area-inset-bottom) + clamp(26px, 10vmin, 92px));
 }
 
 .stick-base {
     width: 100%;
     height: 100%;
-    background: rgba(255, 255, 255, 0.1);
-    border: 2px solid rgba(255, 255, 255, 0.3);
     border-radius: 50%;
-    position: relative;
+    border: 2px solid rgba(108, 218, 255, 0.35);
+    background: radial-gradient(circle at 40% 30%, rgba(60, 197, 245, 0.22), rgba(7, 25, 37, 0.66));
+    backdrop-filter: blur(2px);
 }
 
 .stick-handle {
     position: absolute;
-    width: clamp(48px, 12vmin, 96px);
-    height: clamp(48px, 12vmin, 96px);
-    background: rgba(52, 152, 219, 0.8);
-    border-radius: 50%;
     top: 50%;
     left: 50%;
+    width: clamp(48px, 12vmin, 94px);
+    height: clamp(48px, 12vmin, 94px);
     transform: translate(-50%, -50%);
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+    border-radius: 50%;
+    border: 1px solid rgba(149, 230, 255, 0.42);
+    background: linear-gradient(135deg, rgba(94, 213, 255, 0.88), rgba(37, 176, 233, 0.8));
+    box-shadow: 0 10px 22px rgba(2, 12, 20, 0.45);
 }
 
 .stick-label {
     position: absolute;
-    bottom: -32px;
+    bottom: -30px;
     left: 50%;
     transform: translateX(-50%);
-    font-size: 12px;
-    color: #888;
+    font-size: 11px;
+    color: #9ccde0;
     white-space: nowrap;
 }
 
-/* 动作按钮 */
 #action-buttons {
     position: absolute;
-    bottom: calc(env(safe-area-inset-bottom) + clamp(90px, 22vmin, 140px));
-    right: clamp(10px, 3vmin, 16px);
+    right: clamp(10px, 3vmin, 18px);
+    bottom: calc(env(safe-area-inset-bottom) + clamp(94px, 21vmin, 150px));
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: clamp(6px, 1.8vmin, 8px);
-    z-index: 56;
+    gap: clamp(6px, 1.8vmin, 9px);
 }
 
 .action-btn {
-    width: clamp(44px, 12vmin, 56px);
-    height: clamp(44px, 12vmin, 56px);
+    width: clamp(46px, 11.6vmin, 58px);
+    height: clamp(46px, 11.6vmin, 58px);
     border-radius: 50%;
-    border: 2px solid rgba(255, 255, 255, 0.3);
-    background: rgba(255, 255, 255, 0.1);
-    color: #fff;
-    font-size: clamp(12px, 3.4vmin, 15px);
-    font-weight: bold;
-    cursor: pointer;
-    transition: all 0.1s;
+    border: 1px solid rgba(123, 221, 255, 0.42);
+    background: radial-gradient(circle at 30% 24%, rgba(78, 213, 255, 0.4), rgba(16, 66, 92, 0.85));
+    color: #e5f8ff;
+    font-size: clamp(12px, 3.2vmin, 14px);
+    font-weight: 700;
 }
 
 .action-btn small {
-    font-size: 10px;
-    font-weight: normal;
-    opacity: 0.7;
+    font-size: 9px;
+    opacity: 0.75;
 }
 
-.action-btn:active, .action-btn.pressed {
+.action-btn:active,
+.action-btn.pressed {
     transform: scale(0.95);
-    background: rgba(255, 255, 255, 0.3);
+    filter: brightness(1.12);
 }
 
-.action-btn.primary {
-    background: rgba(46, 204, 113, 0.3);
-    border-color: #2ecc71;
-}
-
-.action-btn.primary:active, .action-btn.primary.pressed {
-    background: rgba(46, 204, 113, 0.5);
-}
-
-/* 鼠标按钮 */
 #mouse-buttons {
     position: absolute;
-    bottom: calc(env(safe-area-inset-bottom) + clamp(10px, 2.5vmin, 20px));
-    right: clamp(10px, 3vmin, 16px);
+    right: clamp(10px, 3vmin, 18px);
+    bottom: calc(env(safe-area-inset-bottom) + clamp(10px, 2.8vmin, 20px));
     display: flex;
-    gap: clamp(8px, 2.5vmin, 10px);
-    z-index: 56;
+    gap: clamp(8px, 2.5vmin, 11px);
 }
 
 .mouse-btn {
-    width: clamp(62px, 18vmin, 86px);
-    height: clamp(44px, 10vmin, 56px);
-    border-radius: clamp(10px, 3vmin, 14px);
-    border: 2px solid rgba(255, 255, 255, 0.3);
-    background: rgba(255, 255, 255, 0.1);
-    color: #fff;
-    font-size: clamp(11px, 3.1vmin, 13px);
+    width: clamp(64px, 18vmin, 90px);
+    height: clamp(44px, 9vmin, 56px);
+    border-radius: 14px;
+    border: 1px solid rgba(123, 221, 255, 0.42);
+    background: linear-gradient(145deg, rgba(14, 66, 93, 0.9), rgba(8, 43, 63, 0.92));
+    color: #e7f9ff;
+    font-size: clamp(11px, 2.8vmin, 13px);
     font-weight: 700;
-    cursor: pointer;
-    transition: all 0.1s;
 }
 
 .mouse-btn small {
     font-size: 10px;
-    font-weight: normal;
-    opacity: 0.7;
-}
-
-.mouse-btn:active, .mouse-btn.pressed {
-    transform: scale(0.97);
-    background: rgba(255, 255, 255, 0.3);
+    opacity: 0.75;
 }
 
 .mouse-btn.primary {
-    background: rgba(46, 204, 113, 0.3);
-    border-color: #2ecc71;
+    background: linear-gradient(145deg, rgba(29, 116, 88, 0.92), rgba(18, 87, 66, 0.95));
+    border-color: rgba(90, 231, 170, 0.52);
 }
 
-.mouse-btn.primary:active, .mouse-btn.primary.pressed {
-    background: rgba(46, 204, 113, 0.5);
+.mouse-btn:active,
+.mouse-btn.pressed {
+    transform: scale(0.97);
+    filter: brightness(1.1);
 }
 
-/* 额外功能键 */
 #extra-buttons {
     position: absolute;
-    bottom: calc(env(safe-area-inset-bottom) + clamp(10px, 2.5vmin, 20px));
     left: 50%;
     transform: translateX(-50%);
+    bottom: calc(env(safe-area-inset-bottom) + clamp(10px, 2.8vmin, 20px));
     display: flex;
-    gap: clamp(8px, 2.5vmin, 10px);
-    z-index: 56;
+    gap: clamp(8px, 2.5vmin, 11px);
 }
 
 .extra-btn {
-    padding: clamp(8px, 2.5vmin, 10px) clamp(10px, 3.5vmin, 15px);
-    border: 1px solid rgba(255, 255, 255, 0.3);
-    background: rgba(255, 255, 255, 0.1);
-    color: #fff;
-    border-radius: 8px;
-    font-size: clamp(10px, 2.8vmin, 11px);
-    cursor: pointer;
-    text-align: center;
-    line-height: 1.3;
+    border: 1px solid rgba(123, 221, 255, 0.4);
+    border-radius: 10px;
+    background: linear-gradient(145deg, rgba(12, 60, 86, 0.9), rgba(8, 40, 58, 0.9));
+    color: #dff7ff;
+    font-size: clamp(10px, 2.6vmin, 11px);
+    line-height: 1.25;
+    padding: clamp(8px, 2.5vmin, 11px) clamp(10px, 3.5vmin, 14px);
 }
 
-.extra-btn:active, .extra-btn.pressed {
-    background: rgba(255, 255, 255, 0.3);
+.extra-btn:active,
+.extra-btn.pressed {
+    filter: brightness(1.15);
 }
 
 .extra-btn.locked {
-    background: rgba(231, 76, 60, 0.35);
-    border-color: rgba(231, 76, 60, 0.7);
+    border-color: rgba(255, 149, 117, 0.65);
+    background: linear-gradient(145deg, rgba(145, 68, 31, 0.9), rgba(117, 45, 23, 0.9));
 }
 
-/* 虚拟键盘 - 全宽适配 */
 #keyboard-controls {
     position: fixed;
-    bottom: 0;
     left: 0;
     right: 0;
-    padding: 8px 4px;
-    background: rgba(10, 10, 15, 0.98);
-    z-index: 60;
-    border-top: 1px solid #333;
+    bottom: 0;
+    z-index: 70;
+    border-top: 1px solid rgba(123, 221, 255, 0.22);
+    background: linear-gradient(180deg, rgba(8, 26, 38, 0.94), rgba(7, 22, 32, 0.97));
+    padding: 8px 5px max(8px, env(safe-area-inset-bottom));
 }
 
 #virtual-keyboard {
-    display: flex;
-    flex-direction: column;
+    display: grid;
     gap: 4px;
-    width: 100%;
 }
 
 .kb-row {
     display: flex;
-    justify-content: space-between;
     gap: 3px;
-    width: 100%;
 }
 
 .kb-key {
     flex: 1;
-    min-width: 24px;
-    height: 42px;
-    padding: 0 2px;
-    border: 1px solid #444;
-    background: linear-gradient(180deg, #3a4a5a 0%, #2c3e50 100%);
-    color: #fff;
-    border-radius: 5px;
-    font-size: 13px;
-    cursor: pointer;
-    transition: all 0.08s ease;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-weight: 500;
-}
-
-.kb-key:active, .kb-key.pressed {
-    background: linear-gradient(180deg, #3498db 0%, #2980b9 100%);
-    transform: scale(0.95);
-    box-shadow: inset 0 2px 4px rgba(0,0,0,0.3);
-}
-
-/* CapsLock 锁定状态 */
-.kb-key.locked {
-    background: linear-gradient(180deg, #e74c3c 0%, #c0392b 100%);
-    box-shadow: 0 0 8px rgba(231, 76, 60, 0.5);
-}
-
-/* 功能键 */
-.kb-key.kb-func {
-    background: linear-gradient(180deg, #4a5560 0%, #3a4550 100%);
-    font-size: 11px;
+    min-width: 22px;
+    height: 41px;
+    border-radius: 7px;
+    border: 1px solid rgba(131, 223, 255, 0.23);
+    background: linear-gradient(170deg, rgba(18, 65, 92, 0.95), rgba(10, 40, 58, 0.95));
+    color: #e4f8ff;
+    font-size: 12px;
     font-weight: 600;
 }
 
-.kb-key.kb-func:active, .kb-key.kb-func.pressed {
-    background: linear-gradient(180deg, #5a6570 0%, #4a5560 100%);
+.kb-key:active,
+.kb-key.pressed {
+    transform: scale(0.95);
+    filter: brightness(1.12);
 }
 
-/* 大键 */
+.kb-key.locked {
+    border-color: rgba(255, 143, 113, 0.56);
+    background: linear-gradient(170deg, rgba(164, 69, 43, 0.95), rgba(122, 39, 22, 0.95));
+}
+
+.kb-key.kb-func {
+    background: linear-gradient(170deg, rgba(24, 75, 102, 0.95), rgba(13, 48, 69, 0.95));
+}
+
 .kb-key.kb-enter {
-    flex: 1.5;
-    background: linear-gradient(180deg, #2ecc71 0%, #27ae60 100%);
-    font-size: 16px;
-}
-
-.kb-key.kb-enter:active, .kb-key.kb-enter.pressed {
-    background: linear-gradient(180deg, #27ae60 0%, #219a52 100%);
+    flex: 1.4;
+    background: linear-gradient(170deg, rgba(25, 132, 108, 0.95), rgba(17, 98, 80, 0.95));
 }
 
 .kb-key.kb-shift {
-    flex: 1.3;
+    flex: 1.25;
 }
 
 .kb-key.kb-ctrl {
-    background: linear-gradient(180deg, #4a5560 0%, #3a4550 100%);
-    font-size: 11px;
-    min-width: 45px;
+    min-width: 48px;
+    background: linear-gradient(170deg, rgba(24, 72, 96, 0.95), rgba(15, 48, 68, 0.95));
 }
 
 .kb-key.kb-space {
     flex: 4;
-    background: linear-gradient(180deg, #3a4a5a 0%, #2c3e50 100%);
 }
 
-/* 底部控制行 */
 .kb-bottom-row {
-    margin-top: 4px;
+    margin-top: 2px;
     gap: 6px;
 }
 
 .kb-arrow-group {
     display: flex;
-    flex-direction: row;
     gap: 3px;
     flex: 1;
     justify-content: flex-end;
 }
 
-.kb-arrow-horizontal .kb-arrow {
-    min-width: 36px;
-    height: 42px;
-    font-size: 14px;
+.kb-arrow {
+    min-width: 38px;
 }
 
-/* 工具类 */
-@media (max-width: 560px) {
-    .tools-layout {
-        grid-template-columns: 1fr;
-    }
-
-    .audio-side-controls {
-        margin-top: 4px;
-    }
-}
-
-.hidden {
-    display: none !important;
-}
-
-/* 横屏优化 */
-@media (orientation: landscape) {
-    #keyboard-controls {
-        padding: 6px 4px;
-    }
-
-    .kb-key {
-        height: 38px;
-        font-size: 12px;
-    }
-
-    .kb-arrow {
-        height: 32px;
-    }
-}
-
-/* 小屏幕横屏 - 平板优化 */
-@media (max-height: 600px) and (orientation: landscape) {
-    #keyboard-controls {
-        padding: 4px;
-    }
-
-    .kb-key {
-        height: 32px;
-        font-size: 11px;
-        min-width: 20px;
-    }
-
-    .kb-row {
-        gap: 2px;
-    }
-
-    .kb-arrow {
-        min-width: 32px;
-        height: 28px;
-        font-size: 10px;
-    }
-}
-
-/* 小屏幕优化 */
-@media (max-height: 500px) {
-    #settings-btn {
-        width: 36px;
-        height: 36px;
-        font-size: 16px;
-    }
-
-    #mode-indicator {
-        font-size: 11px;
-        padding: 6px 10px;
-    }
-}
-
-/* 连接断开提示 */
 #connection-status.disconnected {
     animation: blink 1s infinite;
 }
 
 @keyframes blink {
-    0%, 50% { opacity: 1; }
-    51%, 100% { opacity: 0.3; }
+    0%, 52% { opacity: 1; }
+    53%, 100% { opacity: 0.44; }
+}
+
+@media (max-width: 620px) {
+    .pair-form {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (orientation: landscape) and (max-height: 620px) {
+    #keyboard-controls {
+        padding-top: 5px;
+    }
+
+    .kb-key {
+        height: 34px;
+        font-size: 11px;
+    }
+
+    .kb-arrow {
+        min-width: 32px;
+    }
 }
