@@ -19,6 +19,13 @@ from datetime import datetime
 from fractions import Fraction
 from functools import wraps
 
+try:
+    from .runtime_config import apply_runtime_env_to_os_environ
+except Exception:
+    from runtime_config import apply_runtime_env_to_os_environ
+
+apply_runtime_env_to_os_environ(overwrite=False)
+
 import mss
 import numpy as np
 
@@ -26,7 +33,7 @@ DEBUG_LOG_ENABLED = os.getenv("RC_DEBUG", "0") == "1"
 
 for _stream in (sys.stdout, sys.stderr):
     try:
-        _stream.reconfigure(errors="replace")
+        _stream.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
     except Exception:
         pass
 
@@ -101,6 +108,7 @@ if os.path.isdir(VENDOR_DIR) and VENDOR_DIR not in sys.path:
     sys.path.insert(0, VENDOR_DIR)
 ARTIFACTS_DIR = os.path.join(PROJECT_ROOT, os.getenv("RC_ARTIFACTS_DIR", "artifacts"))
 SECURITY_SHUTDOWN_FLAG_PATH = os.path.join(ARTIFACTS_DIR, "security_shutdown.flag")
+ADMIN_TOKEN = (os.getenv("RC_ADMIN_TOKEN", "") or "").strip()
 
 from flask import Flask, render_template, request
 from flask_cors import CORS
@@ -177,6 +185,29 @@ def _disable_cache_for_ui(resp):
         resp.headers["Expires"] = "0"
     return resp
 
+
+def _is_loopback_addr(addr) -> bool:
+    text = str(addr or "").strip().lower()
+    return text in ("127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost")
+
+
+def _require_local_admin_request():
+    if not _is_loopback_addr(request.remote_addr):
+        return {"error": "admin_local_only"}, 403
+    if not ADMIN_TOKEN:
+        return {"error": "admin_unavailable"}, 503
+    token = str(request.headers.get("X-Admin-Token", "") or "").strip()
+    if not token or token != ADMIN_TOKEN:
+        return {"error": "admin_forbidden"}, 403
+    return None
+
+
+def _coerce_bool_payload(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    return text not in ("", "0", "false", "off", "no")
+
 SOUNDDEVICE_AVAILABLE = False
 sd = None
 try:
@@ -184,7 +215,7 @@ try:
     sd = _sd
     SOUNDDEVICE_AVAILABLE = True
 except Exception as e:
-    print(f"[Audio] sounddevice load failed: {e}")
+    print(f"[声音] sounddevice 加载失败：{e}")
 
 SOUNDCARD_AVAILABLE = False
 sc = None
@@ -193,22 +224,26 @@ try:
     sc = _sc
     SOUNDCARD_AVAILABLE = True
 except Exception as e:
-    print(f"[Audio] soundcard load failed: {e}")
+    print(f"[声音] soundcard 加载失败：{e}")
 
 SYSTEM_AUDIO_CTRL_AVAILABLE = False
 IAudioEndpointVolume = None
 AudioUtilities = None
 CLSCTX_ALL = None
+CoInitialize = None
+CoUninitialize = None
 try:
     from pycaw.pycaw import AudioUtilities as _AudioUtilities, IAudioEndpointVolume as _IAudioEndpointVolume
-    from comtypes import CLSCTX_ALL as _CLSCTX_ALL
+    from comtypes import CLSCTX_ALL as _CLSCTX_ALL, CoInitialize as _CoInitialize, CoUninitialize as _CoUninitialize
 
     AudioUtilities = _AudioUtilities
     IAudioEndpointVolume = _IAudioEndpointVolume
     CLSCTX_ALL = _CLSCTX_ALL
+    CoInitialize = _CoInitialize
+    CoUninitialize = _CoUninitialize
     SYSTEM_AUDIO_CTRL_AVAILABLE = True
 except Exception as e:
-    print(f"[Audio] system mute control unavailable: {e}")
+    print(f"[声音] 系统静音控制不可用：{e}")
 
 # Cleaned garbled comment.
 pyautogui.FAILSAFE = True
@@ -479,6 +514,18 @@ if audio_enabled and not SOUNDDEVICE_AVAILABLE:
     audio_status["last_error"] = "sounddevice_unavailable"
 
 system_audio_lock = threading.Lock()
+system_audio_worker_start_lock = threading.Lock()
+system_audio_state_cache = {
+    "ts": 0.0,
+    "value": {
+        "available": False,
+        "muted": False,
+        "error": "system_audio_state_uninitialized",
+    },
+}
+system_audio_worker_thread = None
+system_audio_worker_queue = None
+SYSTEM_AUDIO_WORKER_TIMEOUT_SEC = 1.5
 
 video_status_lock = threading.Lock()
 video_status = {
@@ -539,62 +586,150 @@ def _audio_snapshot():
         return dict(audio_status)
 
 
-def _system_audio_get_endpoint_volume():
-    if not SYSTEM_AUDIO_CTRL_AVAILABLE or AudioUtilities is None or IAudioEndpointVolume is None or CLSCTX_ALL is None:
-        return None, "system_audio_control_unavailable"
+def _system_audio_state_payload(available: bool, muted: bool = False, error: str = ""):
+    return {
+        "available": bool(available),
+        "muted": bool(muted),
+        "error": str(error or ""),
+    }
+
+
+def _system_audio_get_endpoint_volume_internal():
+    if (
+        not SYSTEM_AUDIO_CTRL_AVAILABLE
+        or AudioUtilities is None
+        or IAudioEndpointVolume is None
+        or CLSCTX_ALL is None
+    ):
+        return None, None, None, "system_audio_control_unavailable"
+
+    speakers = None
+    interface = None
+    endpoint_volume = None
     try:
         speakers = AudioUtilities.GetSpeakers()
         if speakers is None:
-            return None, "no_default_speaker"
+            return None, None, None, "no_default_speaker"
         interface = speakers.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
         endpoint_volume = ctypes.cast(interface, ctypes.POINTER(IAudioEndpointVolume))
-        return endpoint_volume, ""
+        return endpoint_volume, interface, speakers, ""
     except Exception as e:
-        return None, str(e)
-
-
-def _system_audio_get_state():
-    with system_audio_lock:
-        endpoint_volume, err = _system_audio_get_endpoint_volume()
+        return None, None, None, str(e)
+    finally:
         if endpoint_volume is None:
-            return {
-                "available": False,
-                "muted": False,
-                "error": err or "endpoint_unavailable",
-            }
-        try:
-            muted = bool(endpoint_volume.GetMute())
-            return {
-                "available": True,
-                "muted": bool(muted),
-                "error": "",
-            }
-        except Exception as e:
-            return {
-                "available": False,
-                "muted": False,
-                "error": str(e),
-            }
+            interface = None
+            speakers = None
+
+
+def _system_audio_query_state_internal():
+    endpoint_volume, interface, speakers, err = _system_audio_get_endpoint_volume_internal()
+    if endpoint_volume is None:
+        return _system_audio_state_payload(False, False, err or "endpoint_unavailable")
+    try:
+        muted = bool(endpoint_volume.GetMute())
+        return _system_audio_state_payload(True, muted, "")
+    except Exception as e:
+        return _system_audio_state_payload(False, False, str(e))
+    finally:
+        endpoint_volume = None
+        interface = None
+        speakers = None
+
+
+def _system_audio_set_mute_internal(muted: bool):
+    endpoint_volume, interface, speakers, err = _system_audio_get_endpoint_volume_internal()
+    if endpoint_volume is None:
+        return _system_audio_state_payload(False, False, err or "endpoint_unavailable")
+    try:
+        endpoint_volume.SetMute(1 if muted else 0, None)
+        return _system_audio_state_payload(True, bool(muted), "")
+    except Exception as e:
+        return _system_audio_state_payload(False, False, str(e))
+    finally:
+        endpoint_volume = None
+        interface = None
+        speakers = None
+
+
+def _ensure_system_audio_worker():
+    global system_audio_worker_thread, system_audio_worker_queue
+    if not SYSTEM_AUDIO_CTRL_AVAILABLE:
+        return False
+    with system_audio_worker_start_lock:
+        if system_audio_worker_thread is not None and system_audio_worker_thread.is_alive() and system_audio_worker_queue is not None:
+            return True
+        task_queue = queue.Queue()
+
+        def _worker_loop(local_queue):
+            com_initialized = False
+            try:
+                if CoInitialize is not None:
+                    CoInitialize()
+                    com_initialized = True
+                while True:
+                    action, arg, reply_queue = local_queue.get()
+                    if action == "__stop__":
+                        break
+                    try:
+                        if action == "get_state":
+                            result = _system_audio_query_state_internal()
+                        elif action == "set_mute":
+                            result = _system_audio_set_mute_internal(bool(arg))
+                        else:
+                            result = _system_audio_state_payload(False, False, f"unsupported_action:{action}")
+                    except Exception as exc:
+                        result = _system_audio_state_payload(False, False, str(exc))
+                    try:
+                        reply_queue.put(result, timeout=0.1)
+                    except Exception:
+                        pass
+            finally:
+                if com_initialized and CoUninitialize is not None:
+                    try:
+                        CoUninitialize()
+                    except Exception:
+                        pass
+
+        system_audio_worker_queue = task_queue
+        system_audio_worker_thread = threading.Thread(
+            target=_worker_loop,
+            args=(task_queue,),
+            daemon=True,
+            name="SystemAudioWorker",
+        )
+        system_audio_worker_thread.start()
+        return True
+
+
+def _system_audio_call_worker(action: str, arg=None):
+    if not _ensure_system_audio_worker() or system_audio_worker_queue is None:
+        return _system_audio_state_payload(False, False, "system_audio_control_unavailable")
+    reply_queue = queue.Queue(maxsize=1)
+    try:
+        system_audio_worker_queue.put((str(action or ""), arg, reply_queue), timeout=0.2)
+        return reply_queue.get(timeout=float(SYSTEM_AUDIO_WORKER_TIMEOUT_SEC))
+    except Exception as exc:
+        return _system_audio_state_payload(False, False, f"system_audio_worker_error:{exc}")
+
+
+def _system_audio_get_state(force_refresh: bool = False):
+    with system_audio_lock:
+        cached_value = dict(system_audio_state_cache.get("value") or {})
+        if not force_refresh and cached_value:
+            return cached_value
+    value = _system_audio_call_worker("get_state")
+    with system_audio_lock:
+        system_audio_state_cache["ts"] = time.time()
+        system_audio_state_cache["value"] = dict(value)
+        return dict(value)
 
 
 def _system_audio_set_mute(muted: bool):
+    value = _system_audio_call_worker("set_mute", bool(muted))
     with system_audio_lock:
-        endpoint_volume, err = _system_audio_get_endpoint_volume()
-        if endpoint_volume is None:
-            return {
-                "available": False,
-                "muted": False,
-                "error": err or "endpoint_unavailable",
-            }
-        try:
-            endpoint_volume.SetMute(1 if muted else 0, None)
-        except Exception as e:
-            return {
-                "available": False,
-                "muted": False,
-                "error": str(e),
-            }
-    return _system_audio_get_state()
+        system_audio_state_cache["ts"] = time.time()
+        system_audio_state_cache["value"] = dict(value)
+        return dict(value)
 
 
 def _video_set_client_stats(stats):
@@ -1207,8 +1342,8 @@ def is_running_as_admin():
         return False
 
 if not is_running_as_admin():
-    print("[Hint] Not running as administrator: input injection on elevated windows may fail.")
-    print("[Hint] Please use start_admin.bat to launch in administrator mode.")
+    print("[提示] 当前不是以管理员身份运行；对提权窗口的输入注入可能失败。")
+    print("[提示] 如需完整权限，请使用 start_admin.bat 以管理员模式启动。")
 
 
 def _is_dxgi_unsupported_error(err):
@@ -1351,6 +1486,112 @@ def get_local_ip():
         return "127.0.0.1"
 
 
+def _current_capture_mode_payload(status: str = "ok", message: str = ""):
+    mode = "dxgi" if dxgi_camera else "mss"
+    return {
+        "mode": mode,
+        "status": str(status or "ok"),
+        "message": str(message or ""),
+        "dxgi_available": bool(DXCAM_AVAILABLE or dxcam is not None),
+        "dxgi_active": bool(dxgi_camera is not None),
+    }
+
+
+def _apply_quality_setting(value):
+    global quality
+    new_quality = max(10, min(95, int(value)))
+    quality = new_quality
+    bitrate_kbps = _sync_webrtc_bitrate_target()
+    print(f"[设置] 画质已更新：{quality}，WebRTC 码率={bitrate_kbps}kbps")
+    return {
+        "quality": int(quality),
+        "webrtc_bitrate_kbps": int(bitrate_kbps),
+    }
+
+
+def _apply_fps_setting(value):
+    global fps, webrtc_target_fps
+    requested_fps = int(value)
+    new_fps = max(15, min(int(webrtc_fps_max), requested_fps))
+    unchanged = (int(fps) == int(new_fps) and int(webrtc_target_fps) == int(new_fps))
+    fps = new_fps
+    webrtc_target_fps = new_fps
+    if not unchanged and dxgi_capture_enabled and dxgi_camera is not None:
+        reconfigure_dxgi_capture_fps()
+    bitrate_kbps = _sync_webrtc_bitrate_target()
+    if not unchanged:
+        print(f"[设置] 帧率已更新：{fps}，WebRTC 码率={bitrate_kbps}kbps")
+    return {
+        "fps": int(fps),
+        "webrtc_fps": int(webrtc_target_fps),
+        "webrtc_fps_max": int(webrtc_fps_max),
+        "webrtc_bitrate_kbps": int(bitrate_kbps),
+    }
+
+
+def _apply_webrtc_scale_setting(value):
+    global webrtc_scale
+    webrtc_scale = max(0.25, min(1.0, float(value)))
+    bitrate_kbps = _sync_webrtc_bitrate_target()
+    print(f"[设置] 画面倍率已更新：{webrtc_scale:.2f}，WebRTC 码率={bitrate_kbps}kbps")
+    return {
+        "scale": float(webrtc_scale),
+        "webrtc_bitrate_kbps": int(bitrate_kbps),
+    }
+
+
+def _apply_capture_mode_setting(mode):
+    global dxgi_capture_enabled, dxgi_failure_count, dxgi_retry_after, dxgi_hard_disabled
+    mode = str(mode or "auto").strip().lower()
+    if mode not in ("auto", "dxgi", "mss"):
+        raise ValueError("无效的采集方式")
+
+    if mode == "dxgi":
+        dxgi_hard_disabled = False
+        dxgi_retry_after = 0.0
+        dxgi_failure_count = 0
+        dxgi_capture_enabled = init_dxgi_camera()
+        if dxgi_capture_enabled:
+            print("[设置] 采集方式已切换为 DXGI。")
+            return _current_capture_mode_payload(status="ok")
+        print("[设置] DXGI 初始化失败，切换未成功。")
+        return _current_capture_mode_payload(status="error", message="DXGI 初始化失败")
+
+    if mode == "mss":
+        dxgi_capture_enabled = False
+        release_dxgi_camera()
+        print("[设置] 采集方式已切换为 MSS。")
+        return _current_capture_mode_payload(status="ok")
+
+    dxgi_hard_disabled = False
+    dxgi_capture_enabled = True
+    ok = init_dxgi_camera()
+    if ok:
+        print("[设置] 采集方式已切换为自动，当前使用 DXGI。")
+        return _current_capture_mode_payload(status="ok")
+    print("[设置] 自动采集回退到 MSS，因为 DXGI 初始化失败。")
+    return _current_capture_mode_payload(status="fallback", message="DXGI 初始化失败，已回退到 MSS")
+
+
+def _runtime_admin_snapshot():
+    capture = _current_capture_mode_payload()
+    system_audio_state = _system_audio_get_state()
+    return {
+        "quality": int(quality),
+        "webrtc_fps": int(webrtc_target_fps),
+        "webrtc_fps_max": int(webrtc_fps_max),
+        "webrtc_scale": float(webrtc_scale),
+        "webrtc_bitrate_kbps": int(webrtc_target_bitrate_kbps),
+        "capture_mode": capture,
+        "system_mute": system_audio_state,
+        "pair_enabled": bool(pair_security_enabled),
+        "pair_remaining_attempts": int(_pair_remaining_attempts_snapshot()),
+        "pair_failed_attempts": int(_pair_failed_attempts_snapshot()),
+        "connected_clients": int(connected_clients),
+        "audio_enabled": bool(audio_enabled),
+    }
+
+
 def get_mss():
     inst = getattr(mss_local, "inst", None)
     monitor = getattr(mss_local, "monitor", None)
@@ -1402,7 +1643,7 @@ def capture_screen_frame_np():
             with dxgi_lock:
                 if dxgi_camera is None:
                     if not init_dxgi_camera():
-                        raise Exception("DXGI init failed")
+                        raise Exception("DXGI 初始化失败")
 
                 if hasattr(dxgi_camera, "get_latest_frame"):
                     frame = dxgi_camera.get_latest_frame()
@@ -1717,8 +1958,8 @@ if WEBRTC_AVAILABLE:
                     last_error="",
                 )
                 print(
-                    f"[Audio] capture ready: mode=soundcard_loopback, device={selected['name']}, "
-                    f"rate={self._sample_rate}, ch={self._channels}, frame={self._frame_samples}"
+                    f"[声音] 采集已就绪：模式=soundcard_loopback，设备={selected['name']}，"
+                    f"采样率={self._sample_rate}，声道={self._channels}，帧样本={self._frame_samples}"
                 )
                 return True
 
@@ -1831,8 +2072,8 @@ if WEBRTC_AVAILABLE:
                         last_error="",
                     )
                     print(
-                        f"[Audio] capture ready: mode={capture_mode}, device={selected['name']}, "
-                        f"rate={self._sample_rate}, ch={self._channels}, frame={self._frame_samples}"
+                        f"[声音] 采集已就绪：模式={capture_mode}，设备={selected['name']}，"
+                        f"采样率={self._sample_rate}，声道={self._channels}，帧样本={self._frame_samples}"
                     )
                     return
 
@@ -2337,6 +2578,51 @@ def video_health():
         'track_stats': track,
         'client_stats': client,
     }
+
+
+@app.route('/api/admin/runtime', methods=['GET', 'POST'])
+def admin_runtime():
+    auth_error = _require_local_admin_request()
+    if auth_error is not None:
+        return auth_error
+
+    if request.method == 'GET':
+        return _runtime_admin_snapshot()
+
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return {'error': '请求数据格式无效'}, 400
+
+    touched = False
+    try:
+        if 'quality' in data:
+            payload = _apply_quality_setting(data.get('quality'))
+            socketio.emit('quality_updated', payload)
+            touched = True
+        if 'webrtc_fps' in data:
+            payload = _apply_fps_setting(data.get('webrtc_fps'))
+            socketio.emit('fps_updated', payload)
+            touched = True
+        if 'webrtc_scale' in data:
+            payload = _apply_webrtc_scale_setting(data.get('webrtc_scale'))
+            socketio.emit('webrtc_scale_updated', payload)
+            touched = True
+        if 'capture_mode' in data:
+            payload = _apply_capture_mode_setting(data.get('capture_mode'))
+            socketio.emit('capture_mode_updated', payload)
+            touched = True
+        if 'system_mute' in data:
+            state = _system_audio_set_mute(_coerce_bool_payload(data.get('system_mute')))
+            socketio.emit('system_mute_updated', state)
+            touched = True
+    except ValueError as e:
+        return {'error': str(e)}, 400
+    except Exception as e:
+        return {'error': str(e)}, 500
+
+    if not touched:
+        return {'error': '没有可处理的字段'}, 400
+    return _runtime_admin_snapshot()
 # Cleaned garbled comment.
 
 @socketio.on('connect')
@@ -2943,14 +3229,14 @@ async def _webrtc_handle_offer(sid: str, offer_sdp: str, offer_type: str):
                     audio_track = SystemAudioTrack()
                     if _webrtc_attach_track(pc, "audio", audio_track):
                         webrtc_audio_tracks[sid] = audio_track
-                        print("[Audio] WebRTC track attached")
+                        print("[声音] WebRTC 音频轨道已挂载")
                     else:
                         audio_track.stop()
                         _audio_set_error("attach_audio_track_failed")
                 except Exception as e:
                     _audio_set_status(capture_running=False)
                     _audio_set_error(f"audio_track_init_failed: {e}")
-                    print(f"[Audio] track init failed: {e}")
+                    print(f"[声音] 音频轨道初始化失败：{e}")
             else:
                 _audio_set_error("sounddevice_unavailable")
         else:
@@ -3069,7 +3355,7 @@ def handle_get_audio_transport(data=None):
 @socketio.on('set_system_mute')
 @_paired_required
 def handle_set_system_mute(data):
-    muted = bool((data or {}).get('muted', False))
+    muted = _coerce_bool_payload((data or {}).get('muted', False))
     state = _system_audio_set_mute(bool(muted))
     socketio.emit('system_mute_updated', state)
 
@@ -3077,7 +3363,7 @@ def handle_set_system_mute(data):
 @socketio.on('get_system_mute')
 @_paired_required
 def handle_get_system_mute(data=None):
-    state = _system_audio_get_state()
+    state = _system_audio_get_state(force_refresh=True)
     emit('system_mute_updated', state)
 
 
@@ -3607,91 +3893,47 @@ def handle_gamepad(data):
 @_paired_required
 def handle_set_quality(data, sid=None):
     """Cleaned garbled docstring."""
-    global quality
-    new_quality = max(10, min(95, data.get('quality', 60)))
-    quality = new_quality
-    bitrate_kbps = _sync_webrtc_bitrate_target()
-    print(f"[Settings] quality updated: {quality}, webrtc_bitrate={bitrate_kbps}kbps")
-    emit('quality_updated', {'quality': quality, 'webrtc_bitrate_kbps': bitrate_kbps})
+    payload = _apply_quality_setting((data or {}).get('quality', 60))
+    emit('quality_updated', payload)
 
 
 @socketio.on('set_fps')
 @_paired_required
 def handle_set_fps(data, sid=None):
     """Cleaned garbled docstring."""
-    global fps, webrtc_target_fps
     try:
-        requested_fps = int(data.get('fps', webrtc_target_fps))
+        payload = _apply_fps_setting((data or {}).get('fps', webrtc_target_fps))
     except Exception:
-        requested_fps = int(webrtc_target_fps)
-    new_fps = max(15, min(int(webrtc_fps_max), requested_fps))
-    unchanged = (int(fps) == int(new_fps) and int(webrtc_target_fps) == int(new_fps))
-    fps = new_fps
-    webrtc_target_fps = new_fps
-    if not unchanged and dxgi_capture_enabled and dxgi_camera is not None:
-        reconfigure_dxgi_capture_fps()
-
-    bitrate_kbps = _sync_webrtc_bitrate_target()
-    if not unchanged:
-        print(f"[Settings] FPS updated: {fps}, webrtc_bitrate={bitrate_kbps}kbps")
-    emit('fps_updated', {
-        'fps': fps,
-        'webrtc_fps': webrtc_target_fps,
-        'webrtc_fps_max': int(webrtc_fps_max),
-        'webrtc_bitrate_kbps': bitrate_kbps
-    })
+        payload = _apply_fps_setting(webrtc_target_fps)
+    emit('fps_updated', payload)
 
 
 @socketio.on('set_webrtc_scale')
 @_paired_required
 def handle_set_webrtc_scale(data):
-    global webrtc_scale
     try:
-        scale = float(data.get('scale', webrtc_scale))
+        payload = _apply_webrtc_scale_setting((data or {}).get('scale', webrtc_scale))
     except Exception:
-        scale = webrtc_scale
-
-    webrtc_scale = max(0.25, min(1.0, float(scale)))
-    bitrate_kbps = _sync_webrtc_bitrate_target()
-    emit('webrtc_scale_updated', {'scale': webrtc_scale, 'webrtc_bitrate_kbps': bitrate_kbps})
+        payload = _apply_webrtc_scale_setting(webrtc_scale)
+    emit('webrtc_scale_updated', payload)
 
 
 @socketio.on('set_capture_mode')
 @_paired_required
 def handle_set_capture_mode(data):
     """Cleaned garbled docstring."""
-    global dxgi_capture_enabled, dxgi_failure_count, dxgi_retry_after, dxgi_hard_disabled
-    mode = data.get('mode', 'auto')
-
-    if mode == 'dxgi':
-        dxgi_hard_disabled = False
-        dxgi_retry_after = 0.0
-        dxgi_failure_count = 0
-        dxgi_capture_enabled = init_dxgi_camera()
-        if dxgi_capture_enabled:
-            emit('capture_mode_updated', {'mode': 'dxgi', 'status': 'ok'})
-        else:
-            emit('capture_mode_updated', {'mode': 'mss', 'status': 'error', 'message': 'DXGI init failed'})
-    elif mode == 'mss':
-        dxgi_capture_enabled = False
-        release_dxgi_camera()
-        emit('capture_mode_updated', {'mode': 'mss', 'status': 'ok'})
-    else:  # auto
-        dxgi_hard_disabled = False
-        dxgi_capture_enabled = True
-        ok = init_dxgi_camera()
-        emit('capture_mode_updated', {'mode': 'dxgi' if ok else 'mss', 'status': 'ok'})
+    try:
+        payload = _apply_capture_mode_setting((data or {}).get('mode', 'auto'))
+    except ValueError:
+        payload = _current_capture_mode_payload(status='error', message='无效的采集方式')
+    emit('capture_mode_updated', payload)
 
 
 @socketio.on('get_capture_info')
 @_paired_required
 def handle_get_capture_info():
     """Return current capture mode info."""
-    emit('capture_info', {
-        'mode': 'dxgi' if dxgi_camera else 'mss',
-        'dxgi_available': dxcam is not None,
-        'dxgi_active': dxgi_camera is not None
-    })
+    emit('capture_info', _current_capture_mode_payload())
 
 
 # Cleaned garbled comment.
@@ -3705,38 +3947,38 @@ def main():
 
     # Performance default: try DXGI unless explicitly configured as MSS only.
     if use_dxgi or dxgi_capture_enabled:
-        print("[Startup] trying DXGI capture mode...")
+        print("[启动] 正在尝试 DXGI 采集模式...")
         ok = init_dxgi_camera()
         if not ok and webrtc_capture_backend == "dxgi":
-            print("[Startup] DXGI forced but init failed, fallback to MSS disabled by config.")
+            print("[启动] 已强制指定 DXGI，但初始化失败；由于配置禁止回退，MSS 不会自动接管。")
 
     print("=" * 50)
-    print("    Remote control server started")
+    print("    远程控制服务已启动")
     print("=" * 50)
-    print(f"  Host IP: {ip}")
-    print(f"  Port: {port}")
-    print(f"  Screen size: {_get_screen_size()}")
-    print(f"  Capture backend pref: {webrtc_capture_backend}")
-    print(f"  Capture mode: {'DXGI (hardware)' if dxgi_camera else 'MSS (software)'}")
-    print(f"  Video encoder preferred: {video_encoder_status.get('preferred', 'libx264')}")
-    print(f"  Video HW encoders: {video_encoder_status.get('hardware_available', [])}")
-    print(f"  Audio: {'ON' if audio_enabled else 'OFF'}")
-    print(f"  Audio device hint: {audio_device_name or '(auto)'}")
-    print(f"  Pair security: {'ON' if pair_security_enabled else 'OFF'}")
+    print(f"  主机地址：{ip}")
+    print(f"  监听端口：{port}")
+    print(f"  屏幕尺寸：{_get_screen_size()}")
+    print(f"  采集偏好：{webrtc_capture_backend}")
+    print(f"  当前采集：{'DXGI（硬件）' if dxgi_camera else 'MSS（软件）'}")
+    print(f"  首选视频编码器：{video_encoder_status.get('preferred', 'libx264')}")
+    print(f"  可用硬件编码器：{video_encoder_status.get('hardware_available', [])}")
+    print(f"  声音采集：{'开启' if audio_enabled else '关闭'}")
+    print(f"  声音设备提示：{audio_device_name or '自动选择'}")
+    print(f"  配对安全：{'开启' if pair_security_enabled else '关闭'}")
     if pair_security_enabled:
-        print(f"  Pair code: {pair_code}")
-        print(f"  Pair max attempts: {pair_max_attempts} (shutdown code {PAIR_SECURITY_EXIT_CODE})")
+        print(f"  配对码：{pair_code}")
+        print(f"  最大失败次数：{pair_max_attempts}（停服退出码 {PAIR_SECURITY_EXIT_CODE}）")
     print("-" * 50)
-    print(f"  Control UI: http://{ip}:{port}")
-    print(f"  Audio info: http://{ip}:{port}/api/audio_info")
-    print(f"  Audio health: http://{ip}:{port}/api/audio_health")
+    print(f"  控制页面：http://{ip}:{port}")
+    print(f"  声音信息：http://{ip}:{port}/api/audio_info")
+    print(f"  声音健康：http://{ip}:{port}/api/audio_health")
     print("=" * 50)
-    print("\nMake sure tablet and PC are on the same Wi-Fi/LAN.")
-    print("Open the Control UI URL above from the tablet browser.")
+    print("\n请确保平板和电脑连接在同一个 Wi-Fi 或局域网。")
+    print("请在平板浏览器中打开上方显示的控制页面地址。")
     if dxgi_camera:
-        print("\n[Hint] DXGI capture enabled; run as admin to capture UAC prompts.")
+        print("\n[提示] DXGI 采集已启用；如需捕获 UAC 弹窗，请使用管理员权限运行。")
     else:
-        print("\n[Hint] DXGI init failed, running MSS fallback.")
+        print("\n[提示] DXGI 初始化失败，当前已回退到 MSS。")
     print()
 
     try:

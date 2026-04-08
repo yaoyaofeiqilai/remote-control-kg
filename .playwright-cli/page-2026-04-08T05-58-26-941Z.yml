@@ -1,0 +1,9 @@
+- generic [ref=e4]:
+  - generic [ref=e5]: SECURE LINK
+  - heading "输入配对码连接电脑" [level=1] [ref=e6]
+  - paragraph [ref=e7]: 先通过 6 位配对码验证，再进入远程控制台。
+  - generic [ref=e8]:
+    - textbox "配对码" [ref=e9]:
+      - /placeholder: 请输入 6 位数字
+    - button "连接电脑" [ref=e10] [cursor=pointer]
+  - paragraph [ref=e11]: 剩余尝试：3 / 3

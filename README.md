@@ -18,14 +18,33 @@ A LAN remote-control server for controlling a Windows PC from a tablet/phone bro
    - Run `start.bat`
 3. Open the URL shown in terminal on your tablet/phone browser.
 
+## Desktop Server Console
+
+For daily host-side use, start the native desktop console instead of the terminal launcher:
+
+1. Run `start_console.bat`
+2. A WebView2 desktop window opens automatically
+3. Use the local console to:
+   - start / stop / restart the service
+   - inspect client, video, and audio health
+   - edit persistent startup defaults in `config/runtime.env`
+   - open the logs folder without using the terminal
+
+The desktop console is localhost-only and intended for the Windows host machine.
+
 ## Startup Scripts
 
 - `start.bat`
   - Auto-elevates to administrator if needed.
   - Auto-detects Python 3.12.
   - Checks/install dependencies when missing.
+  - Loads overrides from `config/runtime.env` before applying built-in defaults.
   - Starts server with `--dxgi` by default.
   - Initializes `artifacts/` output directories (`logs`, `samples`, `pids`, `baseline`).
+- `start_console.bat`
+  - Launches a native WebView2 desktop console with no persistent terminal window.
+  - Installs missing dependencies from `requirements.txt` when needed.
+  - Starts and supervises the Flask service as a hidden child process.
 - `start_admin.bat`
   - Compatibility wrapper that always starts admin flow.
 
@@ -121,6 +140,8 @@ Example (custom code):
 set RC_PAIR_CODE=123456
 start.bat
 ```
+
+Persistent desktop-console defaults can also be saved to `config/runtime.env`.
 
 ## Notes
 

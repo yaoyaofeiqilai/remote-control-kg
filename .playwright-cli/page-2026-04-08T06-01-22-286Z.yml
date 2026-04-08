@@ -1,0 +1,5 @@
+- generic [ref=e12]:
+  - generic:
+    - generic [ref=e13]: 已连接
+    - generic [ref=e14]: 240 FPS
+  - button "⚙" [ref=e17]

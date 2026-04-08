@@ -56,6 +56,8 @@ if "%CHECK_ONLY%"=="1" (
     exit /b 0
 )
 
+call :apply_runtime_env
+
 call :cleanup_stale_server
 
 echo [INFO] Starting server with DXGI mode...
@@ -163,6 +165,19 @@ for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:"0.0.0.0:5000 .*LISTENI
     )
 )
 if defined KILLED_PIDS echo [INFO] Stopped stale server process(es):!KILLED_PIDS!
+exit /b 0
+
+:apply_runtime_env
+set "RC_RUNTIME_ENV_CMD=%TEMP%\remote_control_runtime_env_%RANDOM%_%RANDOM%.cmd"
+call %PY_CMD% tools\emit_runtime_env_cmd.py > "%RC_RUNTIME_ENV_CMD%" 2>nul
+if errorlevel 1 (
+    if exist "%RC_RUNTIME_ENV_CMD%" del /f /q "%RC_RUNTIME_ENV_CMD%" >nul 2>&1
+    exit /b 1
+)
+if exist "%RC_RUNTIME_ENV_CMD%" (
+    call "%RC_RUNTIME_ENV_CMD%"
+    del /f /q "%RC_RUNTIME_ENV_CMD%" >nul 2>&1
+)
 exit /b 0
 
 :resolve_python

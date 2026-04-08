@@ -18,6 +18,7 @@ env/
 
 # runtime artifacts
 artifacts/
+config/runtime.env
 auto_*.jsonl
 auto_*.log
 auto_*.err.log
