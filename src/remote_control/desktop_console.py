@@ -672,7 +672,6 @@ def main() -> int:
         return 1
 
     manager = ServerManager()
-    manager.start_server(reason="开机启动")
     bridge = DesktopBridge(manager)
     web_server = ConsoleWebServer()
     web_server.start()

@@ -11,6 +11,7 @@ const state = {
     logCursor: 0,
     logLines: [],
     intervals: [],
+    layoutSyncFrame: 0,
 };
 
 const STATUS_LABELS = {
@@ -94,6 +95,28 @@ function showToast(message, kind = '') {
     toast.textContent = message;
     stack.appendChild(toast);
     window.setTimeout(() => toast.remove(), 3200);
+}
+
+function syncPanelHeights() {
+    const configPanel = document.querySelector('.config-panel');
+    const logsPanel = document.querySelector('.logs-panel');
+    if (!configPanel || !logsPanel) return;
+    if (window.innerWidth <= 1220) {
+        logsPanel.style.removeProperty('height');
+        return;
+    }
+    const configHeight = Math.ceil(configPanel.getBoundingClientRect().height);
+    if (configHeight > 0) {
+        logsPanel.style.height = `${configHeight}px`;
+    }
+}
+
+function schedulePanelSync() {
+    if (state.layoutSyncFrame) return;
+    state.layoutSyncFrame = window.requestAnimationFrame(() => {
+        state.layoutSyncFrame = 0;
+        syncPanelHeights();
+    });
 }
 
 async function waitForBridge(timeoutMs = 8000) {
@@ -231,6 +254,7 @@ function renderConfig() {
         input.addEventListener('change', renderConfigDirtyState);
     });
     renderConfigDirtyState();
+    schedulePanelSync();
 }
 
 function syncRuntimeLabels() {
@@ -386,6 +410,7 @@ async function refreshLogs() {
     const result = await callBridge('get_recent_logs', state.logCursor);
     state.logCursor = Number(result.cursor || state.logCursor || 0);
     renderLogs(result.entries || []);
+    schedulePanelSync();
 }
 
 async function refreshServerData() {
@@ -542,11 +567,13 @@ async function boot() {
     renderConfig();
     bindEvents();
     syncRuntimeLabels();
+    schedulePanelSync();
 
     await refreshLogs().catch(() => {});
     await refreshShell().catch(() => {});
     await refreshConfig().catch(() => {});
     await refreshServerData().catch(() => {});
+    schedulePanelSync();
     startPolling();
 }
 
@@ -554,7 +581,13 @@ window.addEventListener('beforeunload', () => {
     for (const timer of state.intervals) {
         window.clearInterval(timer);
     }
+    if (state.layoutSyncFrame) {
+        window.cancelAnimationFrame(state.layoutSyncFrame);
+        state.layoutSyncFrame = 0;
+    }
 });
+
+window.addEventListener('resize', schedulePanelSync);
 
 window.addEventListener('DOMContentLoaded', () => {
     boot().catch((error) => {
